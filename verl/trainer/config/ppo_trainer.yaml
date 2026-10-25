@@ -314,3 +314,15 @@ env:
   webshop:
     use_small: True
     human_goals: False
+  trading: # used when env_name contains "fintrade" (see fintrade/)
+    data_dir: data/fin # parquet files from `python -m fintrade.data`
+    train_tickers: [AAPL, NVDA, MSFT, AMZN, GOOGL, META, JPM, XOM]
+    val_tickers: [AAPL, NVDA, MSFT, AMZN, GOOGL, META, JPM, XOM]
+    train_split: train # train / val / test, dates in fintrade/sim.py SPLITS
+    val_split: val
+    window_len: 20 # trading days per training episode; set env.max_steps >= max(window_len, val_window_len)
+    val_window_len: 20
+    lookback: 10 # past daily returns shown in the observation
+    cost_bps: 10
+    reward_type: log_return # log_return / excess_terminal / risk_adjusted
+    risk_lambda: 0.5 # drawdown penalty for risk_adjusted

@@ -1216,6 +1216,11 @@ class RayPPOTrainer:
                             epsilon=1e-6,
                         )
 
+                        # hierarchy-of-groups statistics (HGPO Table 2 / Fig. 4), logged for every algorithm
+                        if "fintrade" in self.config.env.env_name.lower() and self.config.env.rollout.n > 1:
+                            from fintrade.metrics import batch_context_group_stats
+                            metrics.update(batch_context_group_stats(batch.non_tensor_batch, max_k=4))
+
                     batch = adjust_batch(self.config, batch, mode='copy')
 
                     # balance the number of valid tokens on each dp rank.

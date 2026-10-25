@@ -599,17 +599,105 @@ class AppWorldEnvironmentManager(EnvironmentManagerBase):
                 postprocess_text_obs.append(obs)
         return postprocess_text_obs
 
+class TradingEnvironmentManager(EnvironmentManagerBase):
+    """
+    EnvironmentManager for the single-stock trading env (fintrade).
+    The anchor is "t=<day>|pos=<position>": market data is shared within a group,
+    so the anchor history over k steps is the position path, which makes HGPO's
+    k-context groups exact.
+    """
+    def __init__(self, envs, projection_f, config):
+        from fintrade.prompts import build_prompt, task_description
+        self.memory = SimpleMemory()
+        self._build_prompt = build_prompt
+        cfg = config.env.trading
+        self.task = task_description(envs.window_len, cfg.reward_type, cfg.cost_bps)
+        super().__init__(envs, projection_f, config)
+
+    def reset(self, kwargs) -> Tuple[Dict[str, Any], List[Dict]]:
+        obs, infos = self.envs.reset()
+        self.memory.reset(batch_size=len(obs))
+        self.pre_summaries = [info['summary'] for info in infos]
+        observations = {
+            'text': self.build_text_obs(obs, init=True),
+            'image': None,
+            'anchor': [info['anchor'] for info in infos],
+        }
+        return observations, infos
+
+    def step(self, text_actions: List[str]):
+        actions, valids = self.projection_f(text_actions)
+        next_obs, rewards, dones, infos = self.envs.step(actions)
+
+        self.memory.store({'text_obs': self.pre_summaries, 'action': [info['action_summary'] for info in infos]})
+        self.pre_summaries = [info['summary'] for info in infos]
+
+        next_observations = {
+            'text': self.build_text_obs(next_obs),
+            'image': None,
+            'anchor': [info['anchor'] for info in infos],
+        }
+        # add action_valid to infos
+        for i, info in enumerate(infos):
+            info['is_action_valid'] = to_numpy(valids[i])
+
+        rewards = to_numpy(rewards)
+        dones = to_numpy(dones)
+
+        return next_observations, rewards, dones, infos
+
+    def build_text_obs(self, text_obs: List[str], init: bool = False) -> List[str]:
+        history_length = self.config.env.history_length
+        if not init and history_length > 0:
+            memory_contexts, valid_lens = self.memory.fetch(history_length, obs_key="text_obs", action_key="action")
+
+        postprocess_text_obs = []
+        for i in range(len(text_obs)):
+            if init or history_length <= 0:
+                obs = self._build_prompt(text_obs[i], self.task)
+            else:
+                obs = self._build_prompt(
+                    text_obs[i],
+                    self.task,
+                    action_history=memory_contexts[i],
+                    history_length=valid_lens[i],
+                    step_count=len(self.memory[i]),
+                )
+            postprocess_text_obs.append(obs)
+        return postprocess_text_obs
+
+    def _process_batch(self, batch_idx, total_batch_list, total_infos, success):
+        for i in reversed(range(len(total_batch_list[batch_idx]))):
+            batch_item = total_batch_list[batch_idx][i]
+            if batch_item['active_masks']:
+                info = total_infos[batch_idx][i]
+                success['success_rate'].append(float(info['won']))
+                success['episode_return (not success_rate)'].append(float(info['episode_return']))
+                success['excess_return_vs_bh (not success_rate)'].append(float(info['episode_return'] - info['bh_return']))
+                success['turnover (not success_rate)'].append(float(info['turnover']))
+                return
+
+
 def make_envs(config):
     """
-    Create enviroments 
-    """ 
+    Create enviroments
+    """
     # check if config.env.rollout.n is an integer
     if not isinstance(config.env.rollout.n, int):
         raise ValueError("config.env.rollout.n should be an integer")
     group_n = config.env.rollout.n if config.env.rollout.n > 0 else 1
     resources_per_worker = OmegaConf.to_container(config.env.resources_per_worker, resolve=True)
 
-    if "search" in config.env.env_name.lower():
+    if "fintrade" in config.env.env_name.lower():
+        from agent_system.environments.env_package.trading import build_trading_envs, trading_projection
+        _envs = build_trading_envs(seed=config.env.seed, env_num=config.data.train_batch_size, group_n=group_n, is_train=True, env_config=config.env)
+        _val_envs = build_trading_envs(seed=config.env.seed + 1000, env_num=config.data.val_batch_size, group_n=1, is_train=False, env_config=config.env)
+
+        projection_f = partial(trading_projection)
+        envs = TradingEnvironmentManager(_envs, projection_f, config)
+        val_envs = TradingEnvironmentManager(_val_envs, projection_f, config)
+        return envs, val_envs
+    elif "search" in config.env.env_name.lower():
         from agent_system.environments.env_package.search import build_search_envs, search_projection
         _envs = build_search_envs(seed=config.env.seed, env_num=config.data.train_batch_size, group_n=group_n, is_train=True, env_config=config.env)
         _val_envs = build_search_envs(seed=config.env.seed + 1000, env_num=config.data.val_batch_size, group_n=1, is_train=False, env_config=config.env)

@@ -118,7 +118,7 @@ def check_prompts(data_dir, history_length, tokenizer_name):
 
         tok = AutoTokenizer.from_pretrained(tokenizer_name)
         ids = tok.apply_chat_template([{"role": "user", "content": longest}], add_generation_prompt=True)
-        print(f"max prompt tokens ({tokenizer_name})={len(ids)}  (data.max_prompt_length is 2048)")
+        print(f"max prompt tokens ({tokenizer_name})={len(ids)}  (examples/fintrade/train.sh uses data.max_prompt_length=1024)")
     final = infos[0]
     print(f"final info: return={final['episode_return']:+.4f} bh={final['bh_return']:+.4f} won={final['won']} "
           f"turnover={final['turnover']:.1f}")

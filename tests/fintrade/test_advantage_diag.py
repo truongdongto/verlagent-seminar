@@ -88,7 +88,33 @@ def test_inconsistent_history_ranks_estimators():
     assert m["adv_bias/oracleK/step0_mae"] < m["adv_bias/oracleK/traj_mae"]
 
 
-def test_matches_real_hgpo_implementation():
+def test_mean_norm_mode():
+    paths = [["s0", "s1"], ["s0", "s1"], ["s9", "s1"]]
+    rews = [[0.0, 1.0], [0.0, 3.0], [0.0, 8.0]]
+    b = make_batch(paths, rews)
+    ret = discounted_step_returns(b["rewards"], b["traj_uid"], 1.0)
+    est = compute_estimators(b["uid"], b["traj_uid"], b["anchor_obs"], ret, np.zeros(len(ret)),
+                             history_length=1, mode="mean_norm")
+    assert est["step0"][1] == pytest.approx(1.0 - 4.0)  # 0-context group {1, 3, 8}, no std division
+    assert est["oracleK"][1] == pytest.approx(1.0 - 2.0)  # 1-context group {1, 3}
+    with pytest.raises(ValueError):
+        compute_estimators(b["uid"], b["traj_uid"], b["anchor_obs"], ret, np.zeros(len(ret)), 1, mode="bad")
+
+
+def test_text_anchors_like_webshop():
+    # WebShop / ALFWorld anchors are the raw current observation text
+    paths = [["search page", "results A", "item X"], ["search page", "results A", "item X"],
+             ["search page", "results B", "item X"], ["search page", "results B", "item Y"]]
+    rews = [[0, 0, 10], [0, 0, 0], [0, 0, 10], [0, 0, 5]]
+    b = make_batch(paths, rews)
+    m = batch_advantage_bias_stats(b, np.repeat([10, 0, 10, 5], 3).astype(float), gamma=0.95,
+                                   history_length=2, mode="mean_norm")
+    assert 0 < m["adv_bias/oracleK/coverage"] < 1
+    assert "adv_bias/oracleK/hgpo_mae" in m
+
+
+@pytest.mark.parametrize("mode", ["mean_std_norm", "mean_norm"])
+def test_matches_real_hgpo_implementation(mode):
     try:  # needs the full verl stack (torch, ray, ...), i.e. the training server
         import torch
         from recipe.hgpo.core_hgpo import hgpo_advantage_estimate
@@ -119,8 +145,9 @@ def test_matches_real_hgpo_implementation():
         index=np.array(batch["uid"], dtype=object),
         traj_index=np.array(batch["traj_uid"], dtype=object),
         history_length=2,
-        mode="mean_std_norm",
+        mode=mode,
         length_weight_alpha=1.0,
     )[:, 0].numpy()
-    ours = compute_estimators(batch["uid"], batch["traj_uid"], batch["anchor_obs"], ret, np.zeros(n), history_length=2)["hgpo"]
+    ours = compute_estimators(batch["uid"], batch["traj_uid"], batch["anchor_obs"], ret, np.zeros(n),
+                              history_length=2, mode=mode)["hgpo"]
     np.testing.assert_allclose(ours, real, atol=1e-4)

@@ -1218,7 +1218,8 @@ class RayPPOTrainer:
 
                         # hierarchy-of-groups statistics (HGPO Table 2 / Fig. 4) and advantage bias w.r.t.
                         # the Oracle (HGPO Fig. 2), logged for every group-based algorithm on its own rollouts
-                        if "fintrade" in self.config.env.env_name.lower() and self.config.env.rollout.n > 1:
+                        log_diag = self.config.trainer.get("log_group_diagnostics", False) or "fintrade" in self.config.env.env_name.lower()
+                        if log_diag and self.config.env.rollout.n > 1:
                             from fintrade.metrics import batch_context_group_stats
                             from fintrade.advantage_diag import batch_advantage_bias_stats
                             with _timer("adv_diag", timing_raw):
@@ -1229,6 +1230,7 @@ class RayPPOTrainer:
                                     gamma=self.config.algorithm.gamma,
                                     history_length=getattr(self.config.env, "history_length", 2),
                                     alpha=self.config.algorithm.get("hgpo", {}).get("length_weight_alpha", 1.0),
+                                    mode=self.config.algorithm.get("hgpo", {}).get("mode", "mean_std_norm"),
                                 ))
 
                     batch = adjust_batch(self.config, batch, mode='copy')

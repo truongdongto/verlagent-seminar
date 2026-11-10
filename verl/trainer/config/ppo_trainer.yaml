@@ -34,6 +34,7 @@ actor_rollout_ref:
     enable_gradient_checkpointing: True
     enable_activation_offload: False
     use_remove_padding: False
+    attn_implementation: flash_attention_2  # sdpa / eager for GPUs without FlashAttention 2 (e.g. T4)
     lora_rank: 0  # Set to positive value to enable LoRA (e.g., 32)
     lora_alpha: 16  # LoRA scaling factor
     target_modules: all-linear  # all-linear or [q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj]
@@ -86,10 +87,21 @@ actor_rollout_ref:
       offload_policy: False # only for fsdp2, offload param\grad\optimizer during train
       reshard_after_forward: True # only for fsdp2, [True, False, int between 1 and fsdp_size]
       fsdp_size: -1
+      mixed_precision: # FSDP compute/communication dtypes; fp16 for GPUs without bf16 (e.g. T4)
+        param_dtype: bf16
+        reduce_dtype: fp32
+        buffer_dtype: fp32
+    autocast_dtype: bf16 # torch.autocast dtype in the actor forward; fp16 / fp32 for GPUs without bf16
   ref:
     strategy: fsdp
+    autocast_dtype: ${actor_rollout_ref.actor.autocast_dtype}
     fsdp_config:
       param_offload: False
+      model_dtype: null # null = bf16 for the reference model
+      mixed_precision:
+        param_dtype: ${actor_rollout_ref.actor.fsdp_config.mixed_precision.param_dtype}
+        reduce_dtype: fp32
+        buffer_dtype: fp32
       reshard_after_forward: True # only for fsdp2, [True, False, int between 1 and fsdp_size]
       wrap_policy:
         # transformer_layer_cls_to_wrap: None
@@ -169,6 +181,7 @@ critic:
     enable_gradient_checkpointing: True
     enable_activation_offload: False
     use_remove_padding: False
+    attn_implementation: ${actor_rollout_ref.model.attn_implementation}
     trust_remote_code: ${actor_rollout_ref.model.trust_remote_code}
     fsdp_config:
       param_offload: False
@@ -208,6 +221,7 @@ reward_model:
     use_shm: False
     external_lib: ${actor_rollout_ref.model.external_lib}
     use_remove_padding: False
+    attn_implementation: ${actor_rollout_ref.model.attn_implementation}
     use_fused_kernels: ${actor_rollout_ref.model.use_fused_kernels}
     trust_remote_code: False
     fsdp_config:

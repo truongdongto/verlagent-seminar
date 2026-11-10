@@ -40,7 +40,10 @@ from verl.utils.ulysses import gather_outpus_and_unpad, ulysses_pad_and_slice_in
 from verl.workers.actor import BasePPOActor
 
 if is_cuda_available:
-    from flash_attn.bert_padding import index_first_axis, pad_input, rearrange, unpad_input
+    try:
+        from flash_attn.bert_padding import index_first_axis, pad_input, rearrange, unpad_input
+    except ImportError:  # GPUs without FlashAttention 2 (e.g. T4); only needed with use_remove_padding=True
+        index_first_axis = pad_input = rearrange = unpad_input = None
 elif is_npu_available:
     from transformers.integrations.npu_flash_attention import index_first_axis, pad_input, rearrange, unpad_input
 
@@ -60,6 +63,11 @@ class DataParallelPPOActor(BasePPOActor):
 
         self.use_remove_padding = self.config.get("use_remove_padding", False)
         print(f"Actor use_remove_padding={self.use_remove_padding}")
+        # bf16 by default; fp16 / fp32 for GPUs without bf16 support (e.g. T4)
+        from verl.utils.torch_dtypes import PrecisionType
+        self.autocast_dtype = PrecisionType.to_dtype(self.config.get("autocast_dtype", "bf16"))
+        if self.use_remove_padding and unpad_input is None:
+            raise ImportError("use_remove_padding=True needs flash_attn; install it or set actor_rollout_ref.model.use_remove_padding=False")
         self.use_fused_kernels = self.config.get("use_fused_kernels", False)
         print(f"Actor use_fused_kernels={self.use_fused_kernels}")
 
@@ -85,7 +93,7 @@ class DataParallelPPOActor(BasePPOActor):
             for key in micro_batch["multi_modal_inputs"][0].keys():
                 multi_modal_inputs[key] = torch.cat([inputs[key] for inputs in micro_batch["multi_modal_inputs"]], dim=0)
 
-        with torch.autocast(device_type=self.device_name, dtype=torch.bfloat16):
+        with torch.autocast(device_type=self.device_name, dtype=self.autocast_dtype, enabled=self.autocast_dtype != torch.float32):
             input_ids = micro_batch["input_ids"]
             batch_size, seqlen = input_ids.shape
             attention_mask = micro_batch["attention_mask"]

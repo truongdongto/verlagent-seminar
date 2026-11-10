@@ -30,5 +30,6 @@ algorithm:
 
 trainer:
   project_name: verl-hgpo
+  log_group_diagnostics: False  # log context_groups/* (HGPO Table 2) and adv_bias/* (HGPO Fig. 2) every step
   val_out: False
   val_only: False

@@ -1,8 +1,9 @@
 """Advantage-bias diagnostics (claim C2): how far is each estimator from the Oracle advantage?
 
-Reproduces the analysis of HGPO Fig. 2 on the rollouts of ANY training run. All estimators are
-recomputed on the same batch with the same normalization ((r - mean) / (std + eps), population
-std, groups of size 1 get 0), so the only difference between them is the grouping:
+Reproduces the analysis of HGPO Fig. 2 on the rollouts of ANY training run (fintrade, WebShop,
+ALFWorld). All estimators are recomputed on the same batch with the same normalization (the HGPO
+`mode`: "mean_std_norm" = (r - mean) / (std + eps) with population std, "mean_norm" = r - mean;
+groups of size 1 get 0), so the only difference between them is the grouping:
 
     traj       GRPO     episode return, normalized over the rollout group (uid)
     step0      GiGPO    step return, normalized over steps with the same current anchor (0-context)
@@ -28,9 +29,13 @@ ESTIMATORS = ("traj", "step0", "gigpo", "hgpo")
 ORACLES = ("oracleK", "oraclefull")
 
 
-def _normalize(values: np.ndarray, eps: float) -> np.ndarray:
+def _normalize(values: np.ndarray, eps: float, mode: str = "mean_std_norm") -> np.ndarray:
     if values.size <= 1:
         return np.zeros_like(values)
+    if mode == "mean_norm":
+        return values - values.mean()
+    if mode != "mean_std_norm":
+        raise ValueError(f"Unknown mode: {mode}")
     return (values - values.mean()) / (values.std() + eps)
 
 
@@ -58,6 +63,7 @@ def compute_estimators(
     history_length: int,
     alpha: float = 1.0,
     eps: float = 1e-6,
+    mode: str = "mean_std_norm",
 ) -> Dict[str, np.ndarray]:
     """
     Returns {name: advantages [N]} for ESTIMATORS and ORACLES, plus "<oracle>_defined" masks.
@@ -78,7 +84,7 @@ def compute_estimators(
 
     for members in groups.values():
         members = np.asarray(members)
-        out["traj"][members] = _normalize(episode_scores[members], eps)
+        out["traj"][members] = _normalize(episode_scores[members], eps, mode)
 
         trajs = defaultdict(list)
         for i in members:
@@ -101,7 +107,7 @@ def compute_estimators(
         for key, idx in level_clusters.items():
             if len(idx) <= 1:
                 continue
-            adv = _normalize(step_returns[idx], eps)
+            adv = _normalize(step_returns[idx], eps, mode)
             cluster_adv[key] = dict(zip(idx, adv))
             for i, a in zip(idx, adv):
                 level_adv[i][key[0]] = a
@@ -109,7 +115,7 @@ def compute_estimators(
         for idx in full_clusters.values():
             if len(idx) <= 1:
                 continue
-            out["oraclefull"][idx] = _normalize(step_returns[idx], eps)
+            out["oraclefull"][idx] = _normalize(step_returns[idx], eps, mode)
             defined["oraclefull"][idx] = True
 
         for i in members:
@@ -151,11 +157,11 @@ def bias_metrics(est: Dict[str, np.ndarray], prefix: str = "adv_bias") -> Dict[s
 
 
 def batch_advantage_bias_stats(non_tensor_batch: Dict, episode_scores: np.ndarray, gamma: float,
-                               history_length: int, alpha: float = 1.0) -> Dict[str, float]:
+                               history_length: int, alpha: float = 1.0, mode: str = "mean_std_norm") -> Dict[str, float]:
     """Entry point for the trainer: verl-agent batch before any reordering."""
     step_returns = discounted_step_returns(non_tensor_batch["rewards"], non_tensor_batch["traj_uid"], gamma)
     est = compute_estimators(
         non_tensor_batch["uid"], non_tensor_batch["traj_uid"], non_tensor_batch["anchor_obs"],
-        step_returns, episode_scores, history_length, alpha,
+        step_returns, episode_scores, history_length, alpha, mode=mode,
     )
     return bias_metrics(est)

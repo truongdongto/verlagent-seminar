@@ -23,10 +23,13 @@ import numpy as np
 
 class WebshopWorker:
     """Ray remote actor that replaces the worker function.
-    Each actor hosts a *WebAgentTextEnv* instance.
+    Each actor hosts one or more *WebAgentTextEnv* instances (``envs_per_worker``).
+    Envs with the same seed share one ``SimServer`` (products, search index, goals), so packing a
+    whole group into one actor costs about one env's RAM; each env then keeps its own browser
+    state under its own session prefix.
     """
     
-    def __init__(self, seed, env_kwargs):
+    def __init__(self, seeds, env_kwargs):
         # Lazy import avoids CUDA initialisation issues
         import sys
         import os
@@ -34,14 +37,25 @@ class WebshopWorker:
         sys.path.append(project_root)
         from web_agent_site.envs import WebAgentTextEnv  # noqa: WPS433 (runtime import)
         
-        env_kwargs['seed'] = seed
-        self.env = gym.make('WebAgentTextEnv-v0', **env_kwargs)
+        if isinstance(seeds, int):
+            seeds = [seeds]
+        servers = {}
+        self.envs = []
+        for slot, seed in enumerate(seeds):
+            kwargs = dict(env_kwargs, seed=seed)
+            if len(seeds) > 1:
+                kwargs['session_prefix'] = f'{slot}_'  # envs of a group reset with the same session index
+            if seed in servers:
+                kwargs['server'] = servers[seed]
+            env = gym.make('WebAgentTextEnv-v0', **kwargs)
+            servers.setdefault(seed, env.server)
+            self.envs.append(env)
     
-    def step(self, action):
-        """Execute a step in the environment"""
-        obs, reward, done, info = self.env.step(action)
+    def _step(self, env, action):
+        """Execute a step in one environment"""
+        obs, reward, done, info = env.step(action)
         info = dict(info or {})  # make a *copy* so we can mutate safely
-        info['available_actions'] = self.env.get_available_actions()
+        info['available_actions'] = env.get_available_actions()
         info['task_score'] = reward
 
         # Redefine reward. We only use rule-based reward - win for 10, lose for 0.
@@ -53,31 +67,38 @@ class WebshopWorker:
             reward = 0
 
         return obs, reward, done, info
+
+    def step(self, actions):
+        """Execute a step in every hosted environment"""
+        return [self._step(env, action) for env, action in zip(self.envs, actions)]
     
-    def reset(self, idx):
-        """Reset the environment with given session index"""
-        obs, info = self.env.reset(session=idx)
+    def _reset(self, env, idx):
+        obs, info = env.reset(session=idx)
         info = dict(info or {})
-        info['available_actions'] = self.env.get_available_actions()
+        info['available_actions'] = env.get_available_actions()
         info['won'] = False
         return obs, info
+
+    def reset(self, idxs):
+        """Reset every hosted environment with the given session indices"""
+        return [self._reset(env, idx) for env, idx in zip(self.envs, idxs)]
     
     def render(self, mode_for_render):
-        """Render the environment"""
-        rendered = self.env.render(mode=mode_for_render)
-        return rendered
+        """Render the hosted environments"""
+        return [env.render(mode=mode_for_render) for env in self.envs]
     
     def get_available_actions(self):
         """Get available actions"""
-        return self.env.get_available_actions()
+        return [env.get_available_actions() for env in self.envs]
     
     def get_goals(self):
         """Get environment goals"""
-        return self.env.server.goals
+        return self.envs[0].server.goals
     
     def close(self):
-        """Close the environment"""
-        self.env.close()
+        """Close the environments"""
+        for env in self.envs:
+            env.close()
 
 
 # -----------------------------------------------------------------------------
@@ -99,6 +120,7 @@ class WebshopMultiProcessEnv(gym.Env):
         resources_per_worker: dict,
         is_train: bool = True,
         env_kwargs: dict = None,
+        envs_per_worker: int = 1,
     ) -> None:
         super().__init__()
 
@@ -117,10 +139,14 @@ class WebshopMultiProcessEnv(gym.Env):
         self._env_kwargs = env_kwargs if env_kwargs is not None else {'observation_mode': 'text', 'num_products': None}
 
         # -------------------------- Ray actors setup --------------------------
+        # env i keeps seed + i // group_n as before; consecutive envs are packed envs_per_worker per actor
+        self.envs_per_worker = max(1, int(envs_per_worker))
+        k = self.envs_per_worker
         env_worker = ray.remote(**resources_per_worker)(WebshopWorker)
         self._workers = []
-        for i in range(self.num_processes):
-            worker = env_worker.remote(seed + (i // self.group_n), self._env_kwargs)
+        for start in range(0, self.num_processes, k):
+            seeds = [seed + (i // self.group_n) for i in range(start, min(start + k, self.num_processes))]
+            worker = env_worker.remote(seeds, self._env_kwargs)
             self._workers.append(worker)
 
         # Get goals from the first worker
@@ -156,13 +182,14 @@ class WebshopMultiProcessEnv(gym.Env):
             )
 
         # Send step commands to all workers
+        k = self.envs_per_worker
         futures = []
-        for worker, action in zip(self._workers, actions):
-            future = worker.step.remote(action)
+        for w, worker in enumerate(self._workers):
+            future = worker.step.remote(actions[w * k:(w + 1) * k])
             futures.append(future)
 
         # Collect results
-        results = ray.get(futures)
+        results = [r for chunk in ray.get(futures) for r in chunk]
         obs_list, reward_list, done_list, info_list = [], [], [], []
         for obs, reward, done, info in results:
             obs_list.append(obs)
@@ -177,13 +204,14 @@ class WebshopMultiProcessEnv(gym.Env):
         idx = np.repeat(idx, self.group_n).tolist()
 
         # Send reset commands to all workers
+        k = self.envs_per_worker
         futures = []
-        for worker, i in zip(self._workers, idx):
-            future = worker.reset.remote(i)
+        for w, worker in enumerate(self._workers):
+            future = worker.reset.remote(idx[w * k:(w + 1) * k])
             futures.append(future)
 
         # Collect results
-        results = ray.get(futures)
+        results = [r for chunk in ray.get(futures) for r in chunk]
         obs_list, info_list = [], []
         for obs, info in results:
             obs_list.append(obs)
@@ -196,16 +224,17 @@ class WebshopMultiProcessEnv(gym.Env):
     # ------------------------------------------------------------------
 
     def render(self, mode: str = 'text', env_idx: int = None):
+        k = self.envs_per_worker
         if env_idx is not None:
-            future = self._workers[env_idx].render.remote(mode)
-            return ray.get(future)
+            future = self._workers[env_idx // k].render.remote(mode)
+            return ray.get(future)[env_idx % k]
 
         futures = []
         for worker in self._workers:
             future = worker.render.remote(mode)
             futures.append(future)
         
-        return ray.get(futures)
+        return [r for chunk in ray.get(futures) for r in chunk]
 
     # ------------------------------------------------------------------
     # Clean‑up ----------------------------------------------------------
@@ -245,6 +274,7 @@ def build_webshop_envs(
     resources_per_worker: dict,
     is_train: bool = True,
     env_kwargs: dict = None,
+    envs_per_worker: int = 1,
 ):
     """Mirror *build_sokoban_envs* so higher‑level code can swap seamlessly."""
     return WebshopMultiProcessEnv(
@@ -254,4 +284,5 @@ def build_webshop_envs(
         resources_per_worker=resources_per_worker,
         is_train=is_train,
         env_kwargs=env_kwargs,
+        envs_per_worker=envs_per_worker,
     )

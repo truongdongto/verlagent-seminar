@@ -152,32 +152,42 @@ def check_grad():
 
 
 WORKER_SNIPPET = r"""
-import os, sys, gym
-sys.path.insert(0, os.path.join(os.getcwd(), "agent_system/environments/env_package/webshop/webshop"))
-from web_agent_site.envs import WebAgentTextEnv  # noqa: F401  registers WebAgentTextEnv-v0
+import os, sys
+from agent_system.environments.env_package.webshop.envs import WebshopWorker
 d = "agent_system/environments/env_package/webshop/webshop/data"
-env = gym.make("WebAgentTextEnv-v0", observation_mode="text", num_products=None, human_goals=False, seed=0,
-               file_path=os.path.join(d, "items_shuffle_1000.json"), attr_path=os.path.join(d, "items_ins_v2_1000.json"))
-env.reset()
+kwargs = dict(observation_mode="text", num_products=None, human_goals=False,
+              file_path=os.path.join(d, "items_shuffle_1000.json"), attr_path=os.path.join(d, "items_ins_v2_1000.json"))
+w = WebshopWorker([int(s) for s in sys.argv[1].split(",")], kwargs)  # the same actor class train.sh uses
+w.reset(list(range(len(w.envs))))
+w.step(["search[men dress shirt]"] * len(w.envs))
 # VmHWM = peak RSS of this process; ru_maxrss would inherit the (large) parent's peak across fork/exec
 print([l.split()[1] for l in open("/proc/self/status") if l.startswith("VmHWM")][0])
 """
 
 
-def check_webshop_mem(train_workers=64, val_workers=32):
-    print("===== webshop-mem =====")
-    out = subprocess.run([sys.executable, "-c", WORKER_SNIPPET], capture_output=True, text=True)
+def _worker_rss_gb(seeds):
+    out = subprocess.run([sys.executable, "-c", WORKER_SNIPPET, ",".join(map(str, seeds))],
+                         capture_output=True, text=True)
     if out.returncode != 0:
-        report("FAIL", "could not start a WebShop env:\n" + out.stderr[-2000:])
-        return
-    rss_gb = int(out.stdout.strip().splitlines()[-1]) / 1e6  # VmHWM is in kB
-    total = rss_gb * (train_workers + val_workers)
+        raise RuntimeError("could not start a WebShop worker:\n" + out.stderr[-2000:])
+    return int(out.stdout.strip().splitlines()[-1]) / 1e6  # VmHWM is in kB
+
+
+def check_webshop_mem(k=int(os.environ.get("ENVS_PER_WORKER", 8)), group_n=8, train_tasks=8, val_tasks=32, eval_tasks=128):
+    """Peak RAM of the env actors, packed k envs per actor as in train.sh (env.webshop.envs_per_worker)."""
+    print("===== webshop-mem =====")
+    one = _worker_rss_gb([0])
+    group = _worker_rss_gb([0] * k)                # a training group: k envs, one seed, one shared server
+    mixed = _worker_rss_gb(list(range(1000, 1000 + k)))  # validation: k envs, k seeds, k servers
+    report("INFO", f"actor RSS: 1 env {one:.2f} GB | {k} envs same seed {group:.2f} GB | {k} envs {k} seeds {mixed:.2f} GB "
+                   f"(JAVA_TOOL_OPTIONS={os.environ.get('JAVA_TOOL_OPTIONS', '<unset>')})")
     mem = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / 1e9
-    report("INFO", f"one WebShop worker peaks at {rss_gb:.2f} GB (Python + JVM), "
-                   f"JAVA_TOOL_OPTIONS={os.environ.get('JAVA_TOOL_OPTIONS', '<unset>')}")
-    level = "PASS" if total < 0.6 * mem else ("WARN" if total < 0.85 * mem else "FAIL")
-    report(level, f"{train_workers} train + {val_workers} val workers ~ {total:.1f} GB of {mem:.1f} GB RAM "
-                  f"(the trainer itself needs ~8-10 GB more); if WARN/FAIL try JAVA_TOOL_OPTIONS=-Xmx256m")
+    actors = lambda n: -(-n // k)  # noqa: E731
+    train = actors(train_tasks * group_n) * (group if group_n >= k else mixed)
+    for name, total in [(f"training: {train_tasks}x{group_n} train + {val_tasks} val envs", train + actors(val_tasks) * mixed),
+                        (f"final eval: {eval_tasks} val envs (no train envs)", actors(eval_tasks) * mixed)]:
+        level = "PASS" if total < 0.6 * mem else ("WARN" if total < 0.75 * mem else "FAIL")
+        report(level, f"{name} ~ {total:.1f} GB of {mem:.1f} GB RAM (trainer + vLLM need ~8-10 GB more)")
 
 
 def main():

@@ -15,6 +15,7 @@
 #   GPU_MEM=0.35           vLLM memory fraction per T4
 #   TIME_BUDGET=11h        stop before Kaggle's 12h limit; the run resumes from the last checkpoint
 #   SAVE_FREQ=5            checkpoint every N iterations (only the latest is kept)
+#   ENVS_PER_WORKER=8      WebShop envs per Ray actor (a group of 8 shares one server: ~1.2 GB instead of 8 x 1.2 GB)
 #   CHECKPOINTS_DIR        default /kaggle/working/checkpoints on Kaggle, else $HOME/checkpoints
 #   EVAL=1 EVAL_SEED=123   evaluate the latest checkpoint of this run instead of training
 #   SMOKE=1                2 iterations, 2 tasks x 8 rollouts, 4 validation tasks, no checkpoint
@@ -54,7 +55,8 @@ logger="['console','wandb']"
 # ---------------- environment settings (from recipe/hgpo/run_qwen2.5_1.5b_*_train.sh) ----------------
 case $ENV in
     webshop)
-        env_args=(env.env_name=Webshop env.webshop.use_small=True env.webshop.human_goals=False)
+        env_args=(env.env_name=Webshop env.webshop.use_small=True env.webshop.human_goals=False
+                  env.webshop.envs_per_worker=${ENVS_PER_WORKER:-8})
         max_steps=15          # paper Table 7 setting (Table 1 uses 30)
         max_prompt_length=4096
         mode=mean_norm

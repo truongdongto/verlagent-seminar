@@ -197,7 +197,7 @@ python examples/hgpo_t4/preflight.py all 2>&1 | grep -E "^\[|^---|PREFLIGHT"
 | `env`         | 2 GPU T4 sm75; WebShop `data/*` và `indexes` đều PASS                                             |
 | `vllm`        | PASS cả phần sinh văn bản fp16 lẫn sleep/wake_up                                                  |
 | `grad`        | Một dòng khuyến nghị `TRAIN_DTYPE=fp16` hoặc `fp32`. **Dùng đúng giá trị này cho mọi run**        |
-| `webshop-mem` | PASS. Nếu WARN hoặc FAIL, thêm `os.environ["JAVA_TOOL_OPTIONS"]="-Xmx256m"` ở Cell 1 rồi chạy lại |
+| `webshop-mem` | PASS cho cả dòng "training" và "final eval". Mỗi Ray actor chứa `ENVS_PER_WORKER=8` env; các env cùng nhóm dùng chung một WebShop server (1 env ≈ 1,2 GB RAM, nên 64 actor riêng sẽ không vừa 33 GB). Nếu WARN/FAIL, thêm `os.environ["JAVA_TOOL_OPTIONS"]="-Xmx256m"` ở Cell 1 rồi chạy lại |
 
 
 Smoke test: 2 iteration cho mỗi thuật toán, với 2 task × 8 rollout.

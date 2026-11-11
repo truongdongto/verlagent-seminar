@@ -689,9 +689,9 @@ def make_envs(config):
         if config.trainer.val_only:
             envs = None
         else:
-            _envs = build_webshop_envs(seed=config.env.seed, env_num=config.data.train_batch_size, group_n=group_n, is_train=True, env_kwargs=env_kwargs,resources_per_worker=resources_per_worker)
+            _envs = build_webshop_envs(seed=config.env.seed, env_num=config.data.train_batch_size, group_n=group_n, is_train=True, env_kwargs=env_kwargs,resources_per_worker=resources_per_worker, envs_per_worker=config.env.webshop.get('envs_per_worker', 1))
             envs = WebshopEnvironmentManager(_envs, projection_f, config)
-        _val_envs = build_webshop_envs(seed=config.env.seed + 1000, env_num=config.data.val_batch_size, group_n=1, is_train=False, env_kwargs=env_kwargs,resources_per_worker=resources_per_worker)
+        _val_envs = build_webshop_envs(seed=config.env.seed + 1000, env_num=config.data.val_batch_size, group_n=1, is_train=False, env_kwargs=env_kwargs,resources_per_worker=resources_per_worker, envs_per_worker=config.env.webshop.get('envs_per_worker', 1))
         val_envs = WebshopEnvironmentManager(_val_envs, projection_f, config)
         import time
         time.sleep((config.data.train_batch_size * group_n + config.data.val_batch_size) * 0.1) # wait for the envs to be ready

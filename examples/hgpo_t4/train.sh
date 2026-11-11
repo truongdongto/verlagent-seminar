@@ -165,8 +165,9 @@ timeout --signal=INT --kill-after=120 "$TIME_BUDGET" python3 -m recipe.hgpo.main
     actor_rollout_ref.rollout.gpu_memory_utilization=$GPU_MEM \
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=4 \
     actor_rollout_ref.rollout.enable_chunked_prefill=False \
-    actor_rollout_ref.rollout.enforce_eager=${ENFORCE_EAGER:-False} \
+    actor_rollout_ref.rollout.enforce_eager=True \
     actor_rollout_ref.rollout.free_cache_engine=True \
+    `# T4: free the KV cache during the update; verl then requires eager mode (no CUDA graphs)` \
     actor_rollout_ref.rollout.val_kwargs.temperature=0.4 \
     actor_rollout_ref.rollout.val_kwargs.do_sample=True \
     algorithm.use_kl_in_reward=False \

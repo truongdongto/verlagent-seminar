@@ -93,21 +93,32 @@ def check_vllm():
     os.environ.setdefault("VLLM_ATTENTION_BACKEND", "XFORMERS")
     from transformers import AutoTokenizer
     from vllm import LLM, SamplingParams
+    from agent_system.environments.prompts.webshop import WEBSHOP_TEMPLATE_NO_HIS
+    from agent_system.environments.env_package.webshop.projection import webshop_projection
 
+    # first step of a WebShop episode, rendered exactly like WebshopEnvironmentManager does
+    first_step = WEBSHOP_TEMPLATE_NO_HIS.format(
+        task_description="i need a long clip-in hair extension which is natural looking, and price lower than 40.00 dollars",
+        current_observation="'Search'",
+        available_actions="'search[<your query>]',\n'click[search]',",
+    )
     tok = AutoTokenizer.from_pretrained(MODEL)
-    prompt = tok.apply_chat_template([{"role": "user", "content": SAMPLE_PROMPT}], tokenize=False, add_generation_prompt=True)
+    prompt = tok.apply_chat_template([{"role": "user", "content": first_step}], tokenize=False, add_generation_prompt=True)
     llm = LLM(model=MODEL, dtype="float16", gpu_memory_utilization=0.35, enforce_eager=True, max_model_len=4096,
-              enable_sleep_mode=True)
-    outs = llm.generate([prompt] * 8, SamplingParams(temperature=1.0, max_tokens=512, seed=0))
-    texts = [o.outputs[0].text for o in outs]
-    ok = sum("<action>" in t and "</action>" in t for t in texts)
-    think = sum("<think>" in t for t in texts)
-    cut = sum(o.outputs[0].finish_reason == "length" for o in outs)
-    report("PASS" if all(t.strip() for t in texts) else "FAIL", "vLLM fp16 produced text")
-    report("INFO", f"{ok}/8 samples contain <action>...</action>, {think}/8 contain <think>, "
-                   f"{cut}/8 cut at 512 tokens (low format rate is expected before training)")
-    for i in range(2):  # prefixed so the grep filter in KAGGLE.md keeps them
-        print("\n".join(f"[SAMPLE{i}] {line}" for line in texts[i][:1200].splitlines()))
+              enable_sleep_mode=True, seed=0)
+    n = 64
+    for temperature in (1.0, 0.4):  # training rollouts / validation
+        outs = llm.generate([prompt] * n, SamplingParams(temperature=temperature, max_tokens=512))
+        texts = [o.outputs[0].text for o in outs]
+        _, valids = webshop_projection(list(texts))
+        cut = sum(o.outputs[0].finish_reason == "length" for o in outs)
+        report("PASS" if all(t.strip() for t in texts) else "FAIL", f"vLLM fp16 produced text (T={temperature})")
+        report("INFO", f"T={temperature}: {sum(valids)}/{n} valid (<think> + <action>, as webshop_projection), "
+                       f"{sum('<action>' in t for t in texts)}/{n} have <action>, {len(set(texts))}/{n} distinct, "
+                       f"{cut}/{n} cut at 512 tokens")
+        shown = [t for t, v in zip(texts, valids) if v][:1] + [t for t, v in zip(texts, valids) if not v][:2]
+        for i, t in enumerate(shown):  # prefixed so the grep filter in KAGGLE.md keeps them
+            print("\n".join(f"[SAMPLE T={temperature} #{i}] {line}" for line in t[:800].splitlines()))
     llm.sleep(level=1)  # free_cache_engine=True in train.sh relies on sleep/wake_up
     llm.wake_up()
     report("PASS", "vLLM sleep / wake_up works")
@@ -184,8 +195,11 @@ def check_webshop_mem(k=int(os.environ.get("ENVS_PER_WORKER", 8)), group_n=8, tr
     mem = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / 1e9
     actors = lambda n: -(-n // k)  # noqa: E731
     train = actors(train_tasks * group_n) * (group if group_n >= k else mixed)
+    per_server = max(mixed - one, 0.0) / max(k - 1, 1)  # extra RAM of one more seed (= one more WebShop server)
+    eval_k = 32                                            # train.sh packs 32 envs per actor when EVAL=1
+    eval_total = -(-eval_tasks // eval_k) * (one + (eval_k - 1) * per_server)
     for name, total in [(f"training: {train_tasks}x{group_n} train + {val_tasks} val envs", train + actors(val_tasks) * mixed),
-                        (f"final eval: {eval_tasks} val envs (no train envs)", actors(eval_tasks) * mixed)]:
+                        (f"final eval: {eval_tasks} val envs, {eval_k} per actor (no train envs)", eval_total)]:
         level = "PASS" if total < 0.6 * mem else ("WARN" if total < 0.75 * mem else "FAIL")
         report(level, f"{name} ~ {total:.1f} GB of {mem:.1f} GB RAM (trainer + vLLM need ~8-10 GB more)")
 

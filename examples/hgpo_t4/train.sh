@@ -163,6 +163,9 @@ timeout --signal=INT --kill-after=120 "$TIME_BUDGET" python3 -m recipe.hgpo.main
     actor_rollout_ref.rollout.dtype=float16 \
     actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
     actor_rollout_ref.rollout.gpu_memory_utilization=$GPU_MEM \
+    `# verl defaults (1024 seqs, 8192 tokens) make vLLM's profiling pass eat the whole T4 budget` \
+    actor_rollout_ref.rollout.max_num_seqs=128 \
+    actor_rollout_ref.rollout.max_num_batched_tokens=$((max_prompt_length + 512)) \
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=4 \
     actor_rollout_ref.rollout.enable_chunked_prefill=False \
     actor_rollout_ref.rollout.enforce_eager=True \

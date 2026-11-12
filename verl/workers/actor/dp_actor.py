@@ -70,6 +70,10 @@ class DataParallelPPOActor(BasePPOActor):
             raise ImportError("use_remove_padding=True needs flash_attn; install it or set actor_rollout_ref.model.use_remove_padding=False")
         self.use_fused_kernels = self.config.get("use_fused_kernels", False)
         print(f"Actor use_fused_kernels={self.use_fused_kernels}")
+        # HF causal LMs with `logits_to_keep` (transformers>=4.50) can skip the prompt logits in the padded path
+        import inspect
+        hf_module = getattr(self.actor_module, "_fsdp_wrapped_module", self.actor_module)
+        self.keep_response_logits = "logits_to_keep" in inspect.signature(type(hf_module).forward).parameters
 
         self.ulysses_sequence_parallel_size = self.config.ulysses_sequence_parallel_size
         self.use_ulysses_sp = self.ulysses_sequence_parallel_size > 1
@@ -215,6 +219,9 @@ class DataParallelPPOActor(BasePPOActor):
                 extra_args = {}
                 if self.use_fused_kernels:
                     extra_args["temperature"] = temperature
+                elif self.keep_response_logits:
+                    # only the response positions are used: skip the (seq_len x vocab) logits of the prompt
+                    extra_args["logits_to_keep"] = response_length + 1
                 output = self.actor_module(
                     input_ids=input_ids,
                     attention_mask=attention_mask,
@@ -232,7 +239,7 @@ class DataParallelPPOActor(BasePPOActor):
                     logits = output.logits
 
                     logits.div_(temperature)
-                    logits = logits[:, -response_length - 1 : -1, :]  # (bsz, response_length, vocab_size)
+                    logits = logits[:, -response_length - 1 : -1, :]  # (bsz, response_length, vocab_size); also right when logits_to_keep cut them to response_length + 1
                     log_probs = logprobs_from_logits(logits, micro_batch["responses"])
                     if calculate_entropy:
                         entropy = verl_F.entropy_from_logits(logits)  # (bsz, response_length)

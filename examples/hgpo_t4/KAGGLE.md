@@ -113,6 +113,7 @@ Nếu một bước FAIL, gửi mình phần cell in ra (từ dòng `===== FAIL 
 ```bash
 %%bash
 source $VENV/bin/activate
+python -c "import tqdm, pyserini, spacy" 2>/dev/null || { echo "venv $VENV is missing the Cell 3 packages: run Cell 2 and Cell 3 first"; exit 1; }
 W=$REPO/agent_system/environments/env_package/webshop/webshop
 export JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64
 LOG=/kaggle/working/install_logs; mkdir -p $LOG

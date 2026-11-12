@@ -153,16 +153,25 @@ def check_grad():
     def compare(name, g16, g32):
         finite = bool(torch.isfinite(g16).all())
         cos = torch.nn.functional.cosine_similarity(g32, g16, dim=0).item() if finite else float("nan")
+        rel = ((g16 - g32).norm() / g32.norm()).item() if finite else float("nan")
         underflow = ((g16 == 0) & (g32 != 0)).float().mean().item()
-        report("INFO", f"{name}: finite={finite} grad cosine vs fp32={cos:.4f}, underflowed entries={underflow:.2%}")
-        return finite and cos > 0.99 and underflow < 0.05
+        report("INFO", f"{name}: finite={finite} cosine vs fp32={cos:.4f}, relative error={rel:.2%}, "
+                       f"underflowed entries={underflow:.2%}")
+        return finite and cos > 0.999 and rel < 0.05
 
     l32, g32 = grads(torch.float32)
     l16, g16 = grads(torch.float16)
     report("INFO", f"loss fp32={l32:.6f} fp16={l16:.6f}")
     compare("fp16, no loss scaling", g16, g32)
-    _, g16s = grads(torch.float16, scale=2.0**10)
-    scaled_ok = compare("fp16, loss scale 1024 (what TRAIN_DTYPE=fp16 does)", g16s, g32)
+    del g16
+    scaled_ok = {}
+    for exp in (10, 13, 16):  # dp_actor starts at 2**10 and doubles the scale every 50 overflow-free steps
+        _, g16s = grads(torch.float16, scale=2.0**exp)
+        scaled_ok[exp] = compare(f"fp16, loss scale 2^{exp}", g16s, g32)
+        del g16s
+    scaled_ok = scaled_ok[10]
+    del g32  # each gradient vector is 2 GB of GPU memory
+    torch.cuda.empty_cache()
 
     # speed of one forward+backward on a WebShop-sized micro-batch (2 x 2048 tokens, gradient checkpointing)
     ids = torch.randint(0, 150000, (2, 2048), device="cuda")
@@ -181,7 +190,7 @@ def check_grad():
     report("INFO", f"forward+backward 2x2048 tokens: fp32 {times['fp32']:.2f}s, fp16 {times['fp16']:.2f}s "
                    f"({times['fp32'] / times['fp16']:.1f}x)")
     if scaled_ok:
-        report("PASS", "use TRAIN_DTYPE=fp16 (loss scaling keeps the gradients close to fp32)")
+        report("PASS", "use TRAIN_DTYPE=fp16 (with loss scale 2^10 the gradients match fp32)")
     else:
         report("WARN", "use TRAIN_DTYPE=fp32 (slower but safe); fp16 gradients deviate from fp32 even with loss scaling")
 

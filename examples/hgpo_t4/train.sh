@@ -11,7 +11,8 @@
 # Environment variables (all optional):
 #   SEED=0                 training seed (the paper trains once and evaluates with 3 seeds)
 #   EPOCHS=60              training iterations
-#   TRAIN_DTYPE=fp32       FSDP compute dtype: fp32 (safe, default) or fp16 (fast; no loss scaling, see preflight.py grad)
+#   TRAIN_DTYPE=fp32       FSDP compute dtype: fp32 (safe, default) or fp16 (~3x faster on T4; dp_actor adds dynamic
+#                          loss scaling, see preflight.py grad)
 #   GPU_MEM=0.35           vLLM memory fraction per T4
 #   TIME_BUDGET=11h        stop before Kaggle's 12h limit; the run resumes from the last checkpoint
 #   SAVE_FREQ=5            checkpoint every N iterations (only the latest is kept)

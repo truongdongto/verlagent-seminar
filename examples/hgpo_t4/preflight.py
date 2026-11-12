@@ -126,6 +126,8 @@ def check_vllm():
 
 def check_grad():
     print("===== grad (fp16 vs fp32) =====")
+    import time
+
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -136,30 +138,52 @@ def check_grad():
         tokenize=False)
     batch = tok([text] * 2, return_tensors="pt").to("cuda")
 
-    def grads(dtype):
+    def grads(dtype, scale=1.0):
         model = AutoModelForCausalLM.from_pretrained(MODEL, torch_dtype=dtype, attn_implementation="sdpa").cuda()
         model.gradient_checkpointing_enable()
         logits = model(**batch).logits.float()
         logp = torch.log_softmax(logits[:, :-1], dim=-1).gather(-1, batch["input_ids"][:, 1:, None]).squeeze(-1)
         loss = -logp.mean() * 1e-2  # PPO-sized loss: advantages ~1, many tokens
-        loss.backward()
-        g = torch.cat([p.grad.float().flatten() for p in model.parameters() if p.grad is not None])
+        (loss * scale).backward()   # scale > 1: loss scaling as in dp_actor (ShardedGradScaler)
+        g = torch.cat([p.grad.float().flatten() for p in model.parameters() if p.grad is not None]) / scale
         del model
         torch.cuda.empty_cache()
         return loss.item(), g
 
+    def compare(name, g16, g32):
+        finite = bool(torch.isfinite(g16).all())
+        cos = torch.nn.functional.cosine_similarity(g32, g16, dim=0).item() if finite else float("nan")
+        underflow = ((g16 == 0) & (g32 != 0)).float().mean().item()
+        report("INFO", f"{name}: finite={finite} grad cosine vs fp32={cos:.4f}, underflowed entries={underflow:.2%}")
+        return finite and cos > 0.99 and underflow < 0.05
+
     l32, g32 = grads(torch.float32)
     l16, g16 = grads(torch.float16)
-    finite = bool(torch.isfinite(g16).all())
-    cos = torch.nn.functional.cosine_similarity(g32, g16, dim=0).item() if finite else float("nan")
-    underflow = ((g16 == 0) & (g32 != 0)).float().mean().item()
     report("INFO", f"loss fp32={l32:.6f} fp16={l16:.6f}")
-    report("PASS" if finite else "FAIL", f"fp16 gradients finite: {finite}")
-    report("INFO", f"grad cosine(fp16, fp32)={cos:.4f}, underflowed entries={underflow:.2%}")
-    if finite and cos > 0.99 and underflow < 0.05:
-        report("PASS", "use TRAIN_DTYPE=fp16")
+    compare("fp16, no loss scaling", g16, g32)
+    _, g16s = grads(torch.float16, scale=2.0**10)
+    scaled_ok = compare("fp16, loss scale 1024 (what TRAIN_DTYPE=fp16 does)", g16s, g32)
+
+    # speed of one forward+backward on a WebShop-sized micro-batch (2 x 2048 tokens, gradient checkpointing)
+    ids = torch.randint(0, 150000, (2, 2048), device="cuda")
+    times = {}
+    for name, dtype in [("fp32", torch.float32), ("fp16", torch.float16)]:
+        model = AutoModelForCausalLM.from_pretrained(MODEL, torch_dtype=dtype, attn_implementation="sdpa").cuda()
+        model.gradient_checkpointing_enable()
+        for i in range(3):  # first iteration is warm-up
+            if i == 1:
+                torch.cuda.synchronize(); t0 = time.time()
+            model(input_ids=ids, logits_to_keep=513).logits.float().mean().backward()
+        torch.cuda.synchronize()
+        times[name] = (time.time() - t0) / 2
+        del model
+        torch.cuda.empty_cache()
+    report("INFO", f"forward+backward 2x2048 tokens: fp32 {times['fp32']:.2f}s, fp16 {times['fp16']:.2f}s "
+                   f"({times['fp32'] / times['fp16']:.1f}x)")
+    if scaled_ok:
+        report("PASS", "use TRAIN_DTYPE=fp16 (loss scaling keeps the gradients close to fp32)")
     else:
-        report("WARN", "use TRAIN_DTYPE=fp32 (slower but safe); fp16 gradients deviate from fp32")
+        report("WARN", "use TRAIN_DTYPE=fp32 (slower but safe); fp16 gradients deviate from fp32 even with loss scaling")
 
 
 WORKER_SNIPPET = r"""

@@ -74,6 +74,15 @@ class DataParallelPPOActor(BasePPOActor):
         import inspect
         hf_module = getattr(self.actor_module, "_fsdp_wrapped_module", self.actor_module)
         self.keep_response_logits = "logits_to_keep" in inspect.signature(type(hf_module).forward).parameters
+        # fp16 training (GPUs without bf16) needs dynamic loss scaling, otherwise small gradients underflow to 0
+        self.grad_scaler = None
+        param_dtype = self.config.get("fsdp_config", {}).get("mixed_precision", {}).get("param_dtype", "bf16")
+        if actor_optimizer is not None and PrecisionType.to_dtype(param_dtype) == torch.float16:
+            from torch.distributed.fsdp.sharded_grad_scaler import ShardedGradScaler
+
+            # ~15 optimizer steps per iteration: start low and grow fast instead of the default 2**16 / 2000 steps
+            self.grad_scaler = ShardedGradScaler(init_scale=2.0**10, growth_interval=50)
+            print("Actor uses fp16 dynamic loss scaling")
 
         self.ulysses_sequence_parallel_size = self.config.ulysses_sequence_parallel_size
         self.use_ulysses_sp = self.ulysses_sequence_parallel_size > 1
@@ -216,6 +225,10 @@ class DataParallelPPOActor(BasePPOActor):
                 log_probs = full_log_probs.squeeze(-1)[:, -response_length - 1 : -1]  # (bsz, response_length)
 
             else:  # not using rmpad and no ulysses sp
+                # prompts are left-padded to max_prompt_length: drop the columns that are padding in every row
+                start = int(attention_mask.long().argmax(dim=-1).min())
+                if start > 0:
+                    input_ids, attention_mask, position_ids = input_ids[:, start:], attention_mask[:, start:], position_ids[..., start:]
                 extra_args = {}
                 if self.use_fused_kernels:
                     extra_args["temperature"] = temperature
@@ -236,10 +249,11 @@ class DataParallelPPOActor(BasePPOActor):
                     entropy = output.entropy[:, -response_length - 1 : -1]  # (bsz, response_length)
 
                 else:
-                    logits = output.logits
-
+                    # (bsz, response_length, vocab_size); also right when logits_to_keep cut them to response_length + 1
+                    logits = output.logits[:, -response_length - 1 : -1, :]
+                    if logits.dtype == torch.float16:
+                        logits = logits.float()  # fp16 log-softmax over a 150k vocabulary loses precision
                     logits.div_(temperature)
-                    logits = logits[:, -response_length - 1 : -1, :]  # (bsz, response_length, vocab_size); also right when logits_to_keep cut them to response_length + 1
                     log_probs = logprobs_from_logits(logits, micro_batch["responses"])
                     if calculate_entropy:
                         entropy = verl_F.entropy_from_logits(logits)  # (bsz, response_length)
@@ -249,6 +263,8 @@ class DataParallelPPOActor(BasePPOActor):
     def _optimizer_step(self):
         assert self.config.grad_clip is not None
 
+        if self.grad_scaler is not None:
+            self.grad_scaler.unscale_(self.actor_optimizer)
         if isinstance(self.actor_module, FSDP):
             grad_norm = self.actor_module.clip_grad_norm_(max_norm=self.config.grad_clip)
         elif isinstance(self.actor_module, FSDPModule):
@@ -256,8 +272,13 @@ class DataParallelPPOActor(BasePPOActor):
         else:
             grad_norm = torch.nn.utils.clip_grad_norm_(self.actor_module.parameters(), max_norm=self.config.grad_clip)
 
+        if self.grad_scaler is not None:
+            # skips the step on inf/nan gradients and lowers the scale; otherwise grows it every growth_interval steps
+            self.grad_scaler.step(self.actor_optimizer)
+            self.grad_scaler.update()
+            self.actor_optimizer.zero_grad()
         # if grad_norm is not finite, skip the update
-        if not torch.isfinite(grad_norm):
+        elif not torch.isfinite(grad_norm):
             print(f"WARN: rank {torch.distributed.get_rank()} grad_norm is not finite: {grad_norm}")
             self.actor_optimizer.zero_grad()
         else:
@@ -445,6 +466,8 @@ class DataParallelPPOActor(BasePPOActor):
                         loss = policy_loss * (len(data) / self.config.ppo_mini_batch_size)
                     else:
                         loss = policy_loss / self.gradient_accumulation
+                    if self.grad_scaler is not None:
+                        loss = self.grad_scaler.scale(loss)
                     loss.backward()
 
                     data = {
@@ -457,6 +480,8 @@ class DataParallelPPOActor(BasePPOActor):
 
                 grad_norm = self._optimizer_step()
                 data = {"actor/grad_norm": grad_norm.detach().item()}
+                if self.grad_scaler is not None:
+                    data["actor/loss_scale"] = self.grad_scaler.get_scale()
                 append_to_dict(metrics, data)
         self.actor_optimizer.zero_grad()
         return metrics

@@ -139,8 +139,8 @@ def check_grad():
     batch = tok([text] * 2, return_tensors="pt").to("cuda")
 
     def grads(dtype, scale=1.0):
-        model = AutoModelForCausalLM.from_pretrained(MODEL, torch_dtype=dtype, attn_implementation="sdpa").cuda()
-        model.gradient_checkpointing_enable()
+        model = AutoModelForCausalLM.from_pretrained(MODEL, torch_dtype=dtype, attn_implementation="sdpa").cuda().train()
+        model.gradient_checkpointing_enable()  # HF only checkpoints in train mode (Qwen2.5 has no dropout)
         logits = model(**batch).logits.float()
         logp = torch.log_softmax(logits[:, :-1], dim=-1).gather(-1, batch["input_ids"][:, 1:, None]).squeeze(-1)
         loss = -logp.mean() * 1e-2  # PPO-sized loss: advantages ~1, many tokens
@@ -165,19 +165,24 @@ def check_grad():
     compare("fp16, no loss scaling", g16, g32)
     del g16
     scaled_ok = {}
-    for exp in (10, 13, 16):  # dp_actor starts at 2**10 and doubles the scale every 50 overflow-free steps
+    for exp in (10, 13, 16):  # dp_actor starts at 2**16, halves it on overflow, doubles it every 50 clean steps
         _, g16s = grads(torch.float16, scale=2.0**exp)
         scaled_ok[exp] = compare(f"fp16, loss scale 2^{exp}", g16s, g32)
         del g16s
-    scaled_ok = scaled_ok[10]
+    scaled_ok = scaled_ok[16]
     del g32  # each gradient vector is 2 GB of GPU memory
     torch.cuda.empty_cache()
+
+    if scaled_ok:
+        report("PASS", "use TRAIN_DTYPE=fp16 (with loss scaling the gradients match fp32)")
+    else:
+        report("WARN", "use TRAIN_DTYPE=fp32 (slower but safe); fp16 gradients deviate from fp32 even with loss scaling")
 
     # speed of one forward+backward on a WebShop-sized micro-batch (2 x 2048 tokens, gradient checkpointing)
     ids = torch.randint(0, 150000, (2, 2048), device="cuda")
     times = {}
     for name, dtype in [("fp32", torch.float32), ("fp16", torch.float16)]:
-        model = AutoModelForCausalLM.from_pretrained(MODEL, torch_dtype=dtype, attn_implementation="sdpa").cuda()
+        model = AutoModelForCausalLM.from_pretrained(MODEL, torch_dtype=dtype, attn_implementation="sdpa").cuda().train()
         model.gradient_checkpointing_enable()
         for i in range(3):  # first iteration is warm-up
             if i == 1:
@@ -189,10 +194,6 @@ def check_grad():
         torch.cuda.empty_cache()
     report("INFO", f"forward+backward 2x2048 tokens: fp32 {times['fp32']:.2f}s, fp16 {times['fp16']:.2f}s "
                    f"({times['fp32'] / times['fp16']:.1f}x)")
-    if scaled_ok:
-        report("PASS", "use TRAIN_DTYPE=fp16 (with loss scale 2^10 the gradients match fp32)")
-    else:
-        report("WARN", "use TRAIN_DTYPE=fp32 (slower but safe); fp16 gradients deviate from fp32 even with loss scaling")
 
 
 WORKER_SNIPPET = r"""

@@ -80,8 +80,8 @@ class DataParallelPPOActor(BasePPOActor):
         if actor_optimizer is not None and PrecisionType.to_dtype(param_dtype) == torch.float16:
             from torch.distributed.fsdp.sharded_grad_scaler import ShardedGradScaler
 
-            # ~15 optimizer steps per iteration: start low and grow fast instead of the default 2**16 / 2000 steps
-            self.grad_scaler = ShardedGradScaler(init_scale=2.0**10, growth_interval=50)
+            # 2**16 overflows nowhere in preflight grad; ~15 optimizer steps per iteration, so regrow after 50, not 2000
+            self.grad_scaler = ShardedGradScaler(init_scale=2.0**16, growth_interval=50)
             print("Actor uses fp16 dynamic loss scaling")
 
         self.ulysses_sequence_parallel_size = self.config.ulysses_sequence_parallel_size

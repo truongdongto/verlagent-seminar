@@ -198,7 +198,7 @@ python examples/hgpo_t4/preflight.py all 2>&1 | grep -E "^\[|^---|PREFLIGHT"
 | `env`         | 2 GPU T4 sm75; WebShop `data/*` và `indexes` đều PASS                                             |
 | `vllm`        | PASS cả phần sinh văn bản fp16 lẫn sleep/wake_up                                                  |
 | `grad`        | Một dòng khuyến nghị `TRAIN_DTYPE=fp16` hoặc `fp32`. **Dùng đúng giá trị này cho mọi run**        |
-| `webshop-mem` | PASS cho cả dòng "training" và "final eval". Mỗi Ray actor chứa `ENVS_PER_WORKER=8` env; các env cùng nhóm dùng chung một WebShop server (1 env ≈ 1,2 GB RAM, nên 64 actor riêng sẽ không vừa 33 GB). Nếu WARN/FAIL, thêm `os.environ["JAVA_TOOL_OPTIONS"]="-Xmx256m"` ở Cell 1 rồi chạy lại |
+| `webshop-mem` | PASS cho cả dòng "training" và "final eval". Mỗi Ray actor chứa `ENVS_PER_WORKER=16` env; các env cùng nhóm dùng chung một WebShop server (1 env ≈ 1,2 GB RAM, nên 64 actor riêng sẽ không vừa 33 GB). Ngưỡng PASS là 40% RAM vì 2 GPU worker, TaskRunner và Ray cần thêm ~14 GB. Nếu WARN/FAIL, thêm `os.environ["JAVA_TOOL_OPTIONS"]="-Xmx256m"` ở Cell 1 rồi chạy lại |
 
 
 Smoke test: 2 iteration cho mỗi thuật toán, với 2 task × 8 rollout.
@@ -209,13 +209,24 @@ source $VENV/bin/activate && cd $REPO
 export JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64
 mkdir -p /kaggle/working/smoke
 for a in grpo gigpo hgpo; do
+  # RAM monitor: every 10 s, write used/total RAM and the 6 largest processes
+  ( while sleep 10; do
+      free -m | awk -v t=$(date +%T) '/Mem/{printf "%s used %.1f / %.1f GB\n", t, $3/1024, $2/1024}'
+      ps -eo rss=,args= --sort=-rss | head -6 | awk '{rss=$1; $1=""; printf "   %5.1f GB %s\n", rss/1048576, substr($0, 2, 100)}'
+    done ) > /kaggle/working/smoke/mem_$a.log 2>&1 &
+  MON=$!
   SMOKE=1 TRAIN_DTYPE=fp32 bash examples/hgpo_t4/train.sh webshop $a > /kaggle/working/smoke/$a.log 2>&1
-  echo "$a exit=$?"
-done
-for a in grpo gigpo hgpo; do
-  echo "== $a"; grep -E "Traceback|Error|OutOfMemory|nan" /kaggle/working/smoke/$a.log | grep -v "UserWarning" | tail -3
+  rc=$?; kill $MON
+  echo "== $a exit=$rc | peak RAM: $(grep -oE 'used [0-9.]+' /kaggle/working/smoke/mem_$a.log | sort -k2 -n | tail -1) GB"
+  grep -E "Traceback|Error|OutOfMemory|nan" /kaggle/working/smoke/$a.log | grep -v "UserWarning" | tail -3
   grep -E "^step:" /kaggle/working/smoke/$a.log | tail -1 | grep -oE "(timing_s/(step|gen|adv_diag)|val/success_rate|episode/valid_action_ratio|actor/pg_loss|actor/grad_norm|context_groups/[0-9]-context/utilization|adv_bias/oracleK/[a-z0-9_]+|response_length/clip_ratio|perf/max_memory_allocated_gb):[-0-9.e]+"
+  if [ $rc -ne 0 ]; then  # stop at the first failure: the other algorithms would fail the same way
+    echo "--- last RAM samples before the failure"; tail -14 /kaggle/working/smoke/mem_$a.log
+    echo "--- Ray OOM report"; grep -i -A14 "memory consumers" /kaggle/working/smoke/$a.log | head -18
+    break
+  fi
 done
+true  # keep the cell from raising CalledProcessError when the last grep finds nothing
 ```
 
 Dùng `TRAIN_DTYPE=fp32`: trên Kaggle T4, `preflight grad` cho cosine(fp16, fp32)=0,97 và 27% gradient bị underflow về 0 (verl không có loss scaling khi train fp16). vLLM vẫn sinh văn bản bằng fp16.

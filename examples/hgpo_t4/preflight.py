@@ -184,7 +184,7 @@ def _worker_rss_gb(seeds):
     return int(out.stdout.strip().splitlines()[-1]) / 1e6  # VmHWM is in kB
 
 
-def check_webshop_mem(k=int(os.environ.get("ENVS_PER_WORKER", 8)), group_n=8, train_tasks=8, val_tasks=32, eval_tasks=128):
+def check_webshop_mem(k=int(os.environ.get("ENVS_PER_WORKER", 16)), group_n=8, train_tasks=8, val_tasks=32, eval_tasks=128):
     """Peak RAM of the env actors, packed k envs per actor as in train.sh (env.webshop.envs_per_worker)."""
     print("===== webshop-mem =====")
     one = _worker_rss_gb([0])
@@ -200,8 +200,8 @@ def check_webshop_mem(k=int(os.environ.get("ENVS_PER_WORKER", 8)), group_n=8, tr
     eval_total = -(-eval_tasks // eval_k) * (one + (eval_k - 1) * per_server)
     for name, total in [(f"training: {train_tasks}x{group_n} train + {val_tasks} val envs", train + actors(val_tasks) * mixed),
                         (f"final eval: {eval_tasks} val envs, {eval_k} per actor (no train envs)", eval_total)]:
-        level = "PASS" if total < 0.6 * mem else ("WARN" if total < 0.75 * mem else "FAIL")
-        report(level, f"{name} ~ {total:.1f} GB of {mem:.1f} GB RAM (trainer + vLLM need ~8-10 GB more)")
+        level = "PASS" if total < 0.4 * mem else ("WARN" if total < 0.5 * mem else "FAIL")
+        report(level, f"{name} ~ {total:.1f} GB of {mem:.1f} GB RAM (the 2 GPU workers, TaskRunner and Ray need ~14 GB more)")
 
 
 def main():

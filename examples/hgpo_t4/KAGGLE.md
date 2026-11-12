@@ -231,7 +231,7 @@ done
 true  # keep the cell from raising CalledProcessError when the last grep finds nothing
 ```
 
-`DTYPE`: fp16 thô (không loss scaling) cho cosine(fp16, fp32)=0,97 và 27% gradient bị underflow về 0. `dp_actor` giờ tự bật dynamic loss scaling khi `TRAIN_DTYPE=fp16` (log ra `actor/loss_scale`). Dùng fp16 nếu dòng "fp16, loss scale 1024" của `preflight grad` là PASS, ngược lại dùng fp32. vLLM luôn sinh văn bản bằng fp16.
+`DTYPE`: fp16 thô (không loss scaling) cho cosine(fp16, fp32)=0,97 và 27% gradient bị underflow về 0. `dp_actor` giờ tự bật dynamic loss scaling khi `TRAIN_DTYPE=fp16` (log ra `actor/loss_scale`). Dùng fp16 nếu `preflight grad` báo PASS (trên Kaggle T4: PASS, fp16 nhanh hơn fp32 4,9 lần), ngược lại dùng fp32. vLLM luôn sinh văn bản bằng fp16.
 
 **Gửi mình:** output của preflight, output của smoke test, và giá trị `timing_s/step`. Từ `timing_s/step` mình sẽ ước lượng số session cần cho 60 iteration.
 
@@ -243,7 +243,7 @@ Mỗi version chạy Cell 1–5 rồi đến cell dưới đây. Lặp lại cho
 %%bash
 source $VENV/bin/activate && cd $REPO
 export JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64
-SESSION_BUDGET_MIN=630 TRAIN_DTYPE=fp32 EPOCHS=60 bash examples/hgpo_t4/run_queue.sh webshop
+SESSION_BUDGET_MIN=630 TRAIN_DTYPE=fp16 EPOCHS=60 bash examples/hgpo_t4/run_queue.sh webshop
 tail -n 3 /kaggle/working/checkpoints/logs/*.log
 ```
 
@@ -261,7 +261,7 @@ tail -n 3 /kaggle/working/checkpoints/logs/*.log
 %%bash
 source $VENV/bin/activate && cd $REPO
 export JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64
-TRAIN_DTYPE=fp32 bash examples/hgpo_t4/eval_all.sh webshop
+TRAIN_DTYPE=fp16 bash examples/hgpo_t4/eval_all.sh webshop
 pip install -q matplotlib
 python examples/hgpo_t4/summarize.py --log_dir /kaggle/working/checkpoints/logs --out /kaggle/working/results
 ```

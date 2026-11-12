@@ -5,7 +5,7 @@
 #
 #   bash examples/hgpo_t4/run_queue.sh webshop                 # grpo gigpo hgpo
 #   ALGOS="gigpo hgpo" bash examples/hgpo_t4/run_queue.sh alfworld
-#   SESSION_BUDGET_MIN=660 (default, 11h)   EPOCHS=60   TRAIN_DTYPE=fp32
+#   SESSION_BUDGET_MIN=660 (default, 11h)   EPOCHS=60   TRAIN_DTYPE=fp16
 set -uo pipefail
 
 ENV=${1:?usage: run_queue.sh <webshop|alfworld>}

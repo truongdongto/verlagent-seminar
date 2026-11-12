@@ -19,7 +19,7 @@ from collections import defaultdict
 import numpy as np
 import pandas as pd
 
-STEP_RE = re.compile(r"^step:(\d+) - ")
+STEP_RE = re.compile(r"step:(\d+) - ")  # Ray prefixes actor output with "(TaskRunner pid=..) "
 
 
 def parse_log(path):
@@ -27,12 +27,12 @@ def parse_log(path):
     rows = {}
     with open(path, errors="ignore") as f:
         for line in f:
-            m = STEP_RE.match(line.strip())
+            m = STEP_RE.search(line)
             if not m:
                 continue
             step = int(m.group(1))
             row = rows.setdefault(step, {"step": step})
-            for part in line.strip().split(" - ")[1:]:
+            for part in line[m.start():].strip().split(" - ")[1:]:
                 key, _, val = part.rpartition(":")
                 try:
                     row[key] = float(val)

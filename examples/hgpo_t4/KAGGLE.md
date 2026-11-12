@@ -219,7 +219,7 @@ for a in grpo gigpo hgpo; do
   rc=$?; kill $MON
   echo "== $a exit=$rc | peak RAM: $(grep -oE 'used [0-9.]+' /kaggle/working/smoke/mem_$a.log | sort -k2 -n | tail -1) GB"
   grep -E "Traceback|Error|OutOfMemory|nan" /kaggle/working/smoke/$a.log | grep -v "UserWarning" | tail -3
-  grep -E "^step:" /kaggle/working/smoke/$a.log | tail -1 | grep -oE "(timing_s/(step|gen|adv_diag)|val/success_rate|episode/valid_action_ratio|actor/pg_loss|actor/grad_norm|context_groups/[0-9]-context/utilization|adv_bias/oracleK/[a-z0-9_]+|response_length/clip_ratio|perf/max_memory_allocated_gb):[-0-9.e]+"
+  grep -E "step:[0-9]+ - " /kaggle/working/smoke/$a.log | tail -1 | grep -oE "(timing_s/(step|gen|adv_diag)|val/success_rate|episode/valid_action_ratio|actor/pg_loss|actor/grad_norm|context_groups/[0-9]-context/utilization|adv_bias/oracleK/[a-z0-9_]+|response_length/clip_ratio|perf/max_memory_allocated_gb):[-0-9.e]+"
   if [ $rc -ne 0 ]; then  # stop at the first failure: the other algorithms would fail the same way
     echo "--- last RAM samples before the failure"; tail -14 /kaggle/working/smoke/mem_$a.log
     echo "--- Ray OOM report"; grep -i -A14 "memory consumers" /kaggle/working/smoke/$a.log | head -18

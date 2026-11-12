@@ -167,14 +167,16 @@ print([h.docid for h in s.search('men dress shirt', k=3)])"
 
 Nếu `gdown` bị Google Drive chặn, hãy tải 3 file đó về máy, upload thành Dataset, rồi copy vào `$W/data`.
 
-**Cell 5: khôi phục checkpoint của version trước.** Gắn output của version trước làm input, đặt tên `hgpo-prev`.
+**Cell 5: khôi phục checkpoint của version trước.** Từ version thứ hai trở đi, vào **Add Input → Your Work → Notebook Output Files** và chọn output của version trước. Cell này tự tìm thư mục `checkpoints` trong mọi input.
 
 ```bash
 %%bash
-if [ -d /kaggle/input/hgpo-prev/checkpoints ] && [ ! -d /kaggle/working/checkpoints ]; then
-  cp -r /kaggle/input/hgpo-prev/checkpoints /kaggle/working/
+prev=$(ls -d /kaggle/input/*/checkpoints /kaggle/input/*/*/checkpoints 2>/dev/null | head -1)
+if [ -n "$prev" ] && [ ! -d /kaggle/working/checkpoints ]; then
+  echo "restore from $prev"; cp -r "$prev" /kaggle/working/
 fi
-ls /kaggle/working/checkpoints/logs 2>/dev/nul l || echo "fresh start"
+ls /kaggle/working/checkpoints/logs 2>/dev/null || echo "fresh start"
+du -sh /kaggle/working/checkpoints 2>/dev/null || true
 ```
 
 

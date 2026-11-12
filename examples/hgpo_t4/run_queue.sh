@@ -30,6 +30,14 @@ for algo in $ALGOS; do
         break
     fi
     echo "[$(date '+%F %T')] start $name with ${left} min budget"
+    touch "$LOG_DIR/$name.log"
+    # one short line per iteration on stdout (visible in Kaggle's version log); stops when this script exits
+    tail -n 0 -F --pid=$$ "$LOG_DIR/$name.log" 2>/dev/null | awk -v name="$name" '/step:[0-9]+ - /{
+        line = substr($0, match($0, /step:[0-9]+ - /)); n = split(line, kv, " - "); out = kv[1]
+        for (i = 2; i <= n; i++)
+            if (kv[i] ~ /^(episode\/success_rate|episode\/valid_action_ratio|val\/success_rate|actor\/loss_scale|timing_s\/step):/) out = out "  " kv[i]
+        "date +%T" | getline t; close("date +%T")
+        print t "  " name "  " out; fflush() }' &
     TIME_BUDGET="${left}m" bash examples/hgpo_t4/train.sh "$ENV" "$algo" >> "$LOG_DIR/$name.log" 2>&1
     status=$?
     # train.sh prints this marker when it was cut by the time budget (resume next session)
@@ -38,6 +46,8 @@ for algo in $ALGOS; do
         break
     elif [ $status -eq 0 ]; then
         touch "$LOG_DIR/$name.done"
+        # the finished run only needs its weights for evaluation: drop the optimizer state (~4 GB of the 20 GB output)
+        find "$CHECKPOINTS_DIR/hgpo_t4_$ENV" -path "*/${algo}_k*" -name "optim_world_size_*.pt" -delete 2>/dev/null
         echo "[$(date '+%F %T')] done  $name"
     else
         echo "[$(date '+%F %T')] FAIL  $name (exit $status, see $LOG_DIR/$name.log)"
@@ -45,3 +55,4 @@ for algo in $ALGOS; do
     fi
 done
 echo "queue status:"; ls "$LOG_DIR"/*.done 2>/dev/null || echo "  no finished runs yet"
+du -sh "$CHECKPOINTS_DIR" /kaggle/working 2>/dev/null

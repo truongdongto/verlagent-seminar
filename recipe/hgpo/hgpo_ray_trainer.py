@@ -401,6 +401,11 @@ def _timer(name: str, timing_raw: Dict[str, float]):
     if name not in timing_raw:
         timing_raw[name] = 0
     timing_raw[name] += timer.last
+    if name in _PROGRESS_PHASES:  # a line per phase, followed live by examples/hgpo_t4/run_queue.sh
+        print(f"[progress] {name} done in {timer.last:.0f}s", flush=True)
+
+
+_PROGRESS_PHASES = {"gen", "reward", "adv", "old_log_prob", "ref", "update_actor", "testing", "save_checkpoint"}
 
 
 class RayPPOTrainer:
@@ -708,6 +713,7 @@ class RayPPOTrainer:
         self.validation_generations_logger.log(self.config.trainer.logger, samples, self.global_steps)
 
     def _validate(self):
+        print(f"[progress] validation start ({self.config.data.val_batch_size} tasks)", flush=True)
         reward_tensor_lst = []
         data_source_lst = []
         tool_calling_list = []
@@ -1090,6 +1096,7 @@ class RayPPOTrainer:
 
                 is_last_step = self.global_steps >= self.total_training_steps
 
+                print(f"[progress] iteration {self.global_steps}/{self.total_training_steps} start", flush=True)
                 with _timer("step", timing_raw):
                     # generate a batch
                     with _timer("gen", timing_raw):

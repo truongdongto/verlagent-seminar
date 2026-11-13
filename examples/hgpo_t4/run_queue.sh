@@ -33,12 +33,17 @@ for algo in $ALGOS; do
     fi
     echo "[$(date '+%F %T')] start $name with ${left} min budget"
     touch "$LOG_DIR/$name.log"
-    # one short line per iteration on stdout (visible in Kaggle's version log); stops when this script exits.
+    # live progress on stdout (Kaggle cell output / version log); stops when this script exits:
+    #   [progress] lines: iteration start, each rollout step, each phase (gen, old_log_prob, ref, update_actor, testing...)
+    #   one summary line per finished iteration
     # grep/read instead of awk: Ubuntu's mawk buffers its pipe input, which held every line until the end
-    tail -n 0 -F --pid=$$ "$LOG_DIR/$name.log" 2>/dev/null | grep --line-buffered -E "step:[0-9]+ - " |
+    tail -n 0 -F --pid=$$ "$LOG_DIR/$name.log" 2>/dev/null | grep --line-buffered -E "step:[0-9]+ - |\[progress\]" |
         while IFS= read -r line; do
-            echo "$(date +%T)  $name  $(echo "$line" | grep -oE "step:[0-9]+ |(episode|val)/(success_rate|webshop_task_score \(not success_rate\)):[-0-9.]+|episode/valid_action_ratio:[0-9.]+|actor/loss_scale:[0-9.]+|timing_s/step:[0-9.]+" |
-                sed 's/webshop_task_score (not success_rate)/task_score/' | tr '\n' ' ')"
+            case "$line" in
+                *"[progress]"*) echo "$(date +%T)  $name  ${line##*\[progress\] }" ;;
+                *) echo "$(date +%T)  $name  == $(echo "$line" | grep -oE "step:[0-9]+ |(episode|val)/(success_rate|webshop_task_score \(not success_rate\)):[-0-9.]+|episode/(valid_action_ratio|length/mean):[0-9.]+|actor/(loss_scale|skipped_step_ratio):[0-9.]+|timing_s/step:[0-9.]+" |
+                    sed 's/webshop_task_score (not success_rate)/task_score/' | tr '\n' ' ')" ;;
+            esac
         done &
     TIME_BUDGET="${left}m" bash examples/hgpo_t4/train.sh "$ENV" "$algo" >> "$LOG_DIR/$name.log" 2>&1
     status=$?

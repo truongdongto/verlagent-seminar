@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import torch
+import time
 import numpy as np
 from verl import DataProto
 from verl.utils.dataset.rl_dataset import collate_fn
@@ -329,8 +330,11 @@ class TrajectoryCollector:
         episode_rewards = np.zeros(batch_size, dtype=np.float32)
         tool_callings = np.zeros(batch_size, dtype=np.float32)
         # Trajectory collection loop
+        rollout_start = time.time()
         for _step in range(self.config.env.max_steps):
             active_masks = np.logical_not(is_done)
+            print(f"[progress] rollout step {_step + 1}/{self.config.env.max_steps}: {int(active_masks.sum())}/{batch_size} "
+                  f"envs active, {time.time() - rollout_start:.0f}s", flush=True)
 
             batch = self.preprocess_batch(gen_batch=gen_batch, obs=obs)
 

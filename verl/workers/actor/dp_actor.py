@@ -227,14 +227,21 @@ class DataParallelPPOActor(BasePPOActor):
             else:  # not using rmpad and no ulysses sp
                 # prompts are left-padded to max_prompt_length: drop the columns that are padding in every row
                 start = int(attention_mask.long().argmax(dim=-1).min())
-                if start > 0:
-                    input_ids, attention_mask, position_ids = input_ids[:, start:], attention_mask[:, start:], position_ids[..., start:]
+                # responses are right-padded to response_length: drop the trailing columns that are padding in every
+                # row too; those positions get log-prob 0 below and the response mask keeps them out of every loss
+                pad_right = 0
+                if not self.use_fused_kernels:
+                    pad_right = min(int(attention_mask.flip(-1).long().argmax(dim=-1).min()), response_length - 1)
+                kept_length = response_length - pad_right
+                end = seqlen - pad_right
+                if start > 0 or pad_right > 0:
+                    input_ids, attention_mask, position_ids = input_ids[:, start:end], attention_mask[:, start:end], position_ids[..., start:end]
                 extra_args = {}
                 if self.use_fused_kernels:
                     extra_args["temperature"] = temperature
                 elif self.keep_response_logits:
                     # only the response positions are used: skip the (seq_len x vocab) logits of the prompt
-                    extra_args["logits_to_keep"] = response_length + 1
+                    extra_args["logits_to_keep"] = kept_length + 1
                 output = self.actor_module(
                     input_ids=input_ids,
                     attention_mask=attention_mask,
@@ -249,14 +256,17 @@ class DataParallelPPOActor(BasePPOActor):
                     entropy = output.entropy[:, -response_length - 1 : -1]  # (bsz, response_length)
 
                 else:
-                    # (bsz, response_length, vocab_size); also right when logits_to_keep cut them to response_length + 1
-                    logits = output.logits[:, -response_length - 1 : -1, :]
+                    # (bsz, kept_length, vocab_size); also right when logits_to_keep cut them to kept_length + 1
+                    logits = output.logits[:, -kept_length - 1 : -1, :]
                     if logits.dtype == torch.float16:
                         logits = logits.float()  # fp16 log-softmax over a 150k vocabulary loses precision
                     logits.div_(temperature)
-                    log_probs = logprobs_from_logits(logits, micro_batch["responses"])
+                    log_probs = logprobs_from_logits(logits, micro_batch["responses"][:, :kept_length])
                     if calculate_entropy:
-                        entropy = verl_F.entropy_from_logits(logits)  # (bsz, response_length)
+                        entropy = verl_F.entropy_from_logits(logits)  # (bsz, kept_length)
+                    if pad_right > 0:  # back to (bsz, response_length)
+                        log_probs = torch.nn.functional.pad(log_probs, (0, pad_right))
+                        entropy = torch.nn.functional.pad(entropy, (0, pad_right)) if entropy is not None else None
 
             return entropy, log_probs
 
@@ -481,7 +491,11 @@ class DataParallelPPOActor(BasePPOActor):
                 grad_norm = self._optimizer_step()
                 data = {"actor/grad_norm": grad_norm.detach().item()}
                 if self.grad_scaler is not None:
-                    data["actor/loss_scale"] = self.grad_scaler.get_scale()
+                    # an overflowed step is skipped by the scaler: count it instead of averaging inf into grad_norm
+                    skipped = not torch.isfinite(grad_norm)
+                    data = {"actor/skipped_step_ratio": float(skipped), "actor/loss_scale": self.grad_scaler.get_scale()}
+                    if not skipped:
+                        data["actor/grad_norm"] = grad_norm.detach().item()
                 append_to_dict(metrics, data)
         self.actor_optimizer.zero_grad()
         return metrics

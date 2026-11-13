@@ -39,6 +39,9 @@ class WebshopWorker:
         
         if isinstance(seeds, int):
             seeds = [seeds]
+        env_kwargs = dict(env_kwargs)
+        # 'binary': 10 on success, else 0 (paper); 'score': 10 x WebShop task score at the end (partial credit)
+        self.reward_type = env_kwargs.pop('reward_type', 'binary')
         servers = {}
         self.envs = []
         for slot, seed in enumerate(seeds):
@@ -59,12 +62,11 @@ class WebshopWorker:
         info['task_score'] = reward
 
         # Redefine reward. We only use rule-based reward - win for 10, lose for 0.
-        if done and reward == 1.0:
-            info['won'] = True
-            reward = 10.0
+        info['won'] = bool(done and reward == 1.0)
+        if self.reward_type == 'score':
+            reward = 10.0 * reward if done else 0  # WebShop scores the bought product in [0, 1]; 1 = success
         else:
-            info['won'] = False
-            reward = 0
+            reward = 10.0 if info['won'] else 0
 
         return obs, reward, done, info
 

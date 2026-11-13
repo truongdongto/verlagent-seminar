@@ -18,6 +18,8 @@
 #   SAVE_FREQ=5            checkpoint every N iterations (only the latest is kept)
 #   ENVS_PER_WORKER=16     WebShop envs per Ray actor (a group of 8 shares one server: ~1.3 GB per actor instead of
 #                          1.2 GB per env); 32 when EVAL=1 (128 val envs -> 4 actors)
+#   REWARD=binary          WebShop reward: binary (10 on success, paper) or score (10 x task score of the bought
+#                          product: partial credit); runs with REWARD!=binary get their own run name and checkpoints
 #   RAY_CPUS=8             Ray CPU slots (each slot may get an idle prestarted Python worker, ~0.1 GB RAM)
 #   CHECKPOINTS_DIR        default /kaggle/working/checkpoints on Kaggle, else $HOME/checkpoints
 #   EVAL=1 EVAL_SEED=123   evaluate the latest checkpoint of this run instead of training
@@ -42,6 +44,7 @@ TRAIN_DTYPE=${TRAIN_DTYPE:-fp32}
 GPU_MEM=${GPU_MEM:-0.35}
 TIME_BUDGET=${TIME_BUDGET:-11h}
 SAVE_FREQ=${SAVE_FREQ:-5}
+REWARD=${REWARD:-binary}
 if [ -d /kaggle/working ]; then
     CHECKPOINTS_DIR=${CHECKPOINTS_DIR:-/kaggle/working/checkpoints}
 else
@@ -58,7 +61,7 @@ logger="['console','wandb']"
 # ---------------- environment settings (from recipe/hgpo/run_qwen2.5_1.5b_*_train.sh) ----------------
 case $ENV in
     webshop)
-        env_args=(env.env_name=Webshop env.webshop.use_small=True env.webshop.human_goals=False
+        env_args=(env.env_name=Webshop env.webshop.use_small=True env.webshop.human_goals=False env.webshop.reward_type=$REWARD
                   env.webshop.envs_per_worker=${ENVS_PER_WORKER:-$([ "${EVAL:-0}" = 1 ] && echo 32 || echo 16)})
         max_steps=15          # paper Table 7 setting (Table 1 uses 30)
         max_prompt_length=4096
@@ -94,6 +97,7 @@ esac
 
 project_name="hgpo_t4_${ENV}"
 experiment_name="${ALGO}_k${history_length}_$(basename $MODEL)_s${SEED}"
+[ "$REWARD" != "binary" ] && experiment_name="${experiment_name}_r${REWARD}"
 run_dir="${CHECKPOINTS_DIR}/${project_name}/${experiment_name}"
 log_name=$experiment_name
 env_seed=$SEED

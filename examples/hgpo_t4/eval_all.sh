@@ -8,6 +8,8 @@ set -uo pipefail
 
 ENV=${1:?usage: eval_all.sh <webshop|alfworld>}
 ALGOS=${ALGOS:-grpo gigpo hgpo}
+REWARD=${REWARD:-binary}; export REWARD
+rtag=""; [ "$REWARD" != "binary" ] && rtag="_$REWARD"  # keeps logs of different rewards apart
 SEEDS=${SEEDS:-123 456 789}
 if [ -d /kaggle/working ]; then CHECKPOINTS_DIR=${CHECKPOINTS_DIR:-/kaggle/working/checkpoints}; else CHECKPOINTS_DIR=${CHECKPOINTS_DIR:-$HOME/checkpoints}; fi
 LOG_DIR=${LOG_DIR:-$CHECKPOINTS_DIR/logs}
@@ -20,7 +22,7 @@ splits="none"
 for algo in $ALGOS; do
     for split in $splits; do
         for seed in $SEEDS; do
-            tag="eval_${ENV}_${algo}_seed${seed}"
+            tag="eval_${ENV}_${algo}${rtag}_seed${seed}"
             [ "$split" != "none" ] && tag="${tag}_${split}"
             if [ -f "$LOG_DIR/$tag.done" ]; then echo "skip $tag"; continue; fi
             echo "[$(date '+%F %T')] $tag"

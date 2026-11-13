@@ -329,6 +329,7 @@ env:
     use_small: True
     human_goals: False
     envs_per_worker: 1 # envs hosted per Ray actor; envs with the same seed (a group) share one WebShop server, saving RAM
+    reward_type: binary # binary: 10 on success (paper); score: 10 x WebShop task score of the bought product
   trading: # used when env_name contains "fintrade" (see fintrade/)
     data_dir: data/fin # parquet files from `python -m fintrade.data`
     train_tickers: [AAPL, NVDA, MSFT, AMZN, GOOGL, META, JPM, XOM]

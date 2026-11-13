@@ -10,6 +10,8 @@ set -uo pipefail
 
 ENV=${1:?usage: run_queue.sh <webshop|alfworld>}
 ALGOS=${ALGOS:-grpo gigpo hgpo}
+REWARD=${REWARD:-binary}; export REWARD
+rtag=""; [ "$REWARD" != "binary" ] && rtag="_$REWARD"  # keeps logs of different rewards apart
 SESSION_BUDGET_MIN=${SESSION_BUDGET_MIN:-660}
 EPOCHS=${EPOCHS:-60}
 if [ -d /kaggle/working ]; then CHECKPOINTS_DIR=${CHECKPOINTS_DIR:-/kaggle/working/checkpoints}; else CHECKPOINTS_DIR=${CHECKPOINTS_DIR:-$HOME/checkpoints}; fi
@@ -19,7 +21,7 @@ mkdir -p "$LOG_DIR"
 deadline=$(( $(date +%s) + SESSION_BUDGET_MIN * 60 ))
 
 for algo in $ALGOS; do
-    name="${ENV}_${algo}"
+    name="${ENV}_${algo}${rtag}"
     if [ -f "$LOG_DIR/$name.done" ]; then
         echo "skip $name (done)"
         continue
@@ -31,13 +33,13 @@ for algo in $ALGOS; do
     fi
     echo "[$(date '+%F %T')] start $name with ${left} min budget"
     touch "$LOG_DIR/$name.log"
-    # one short line per iteration on stdout (visible in Kaggle's version log); stops when this script exits
-    tail -n 0 -F --pid=$$ "$LOG_DIR/$name.log" 2>/dev/null | awk -v name="$name" '/step:[0-9]+ - /{
-        line = substr($0, match($0, /step:[0-9]+ - /)); n = split(line, kv, " - "); out = kv[1]
-        for (i = 2; i <= n; i++)
-            if (kv[i] ~ /^(episode\/success_rate|episode\/valid_action_ratio|val\/success_rate|actor\/loss_scale|timing_s\/step):/) out = out "  " kv[i]
-        "date +%T" | getline t; close("date +%T")
-        print t "  " name "  " out; fflush() }' &
+    # one short line per iteration on stdout (visible in Kaggle's version log); stops when this script exits.
+    # grep/read instead of awk: Ubuntu's mawk buffers its pipe input, which held every line until the end
+    tail -n 0 -F --pid=$$ "$LOG_DIR/$name.log" 2>/dev/null | grep --line-buffered -E "step:[0-9]+ - " |
+        while IFS= read -r line; do
+            echo "$(date +%T)  $name  $(echo "$line" | grep -oE "step:[0-9]+ |(episode|val)/(success_rate|webshop_task_score \(not success_rate\)):[-0-9.]+|episode/valid_action_ratio:[0-9.]+|actor/loss_scale:[0-9.]+|timing_s/step:[0-9.]+" |
+                sed 's/webshop_task_score (not success_rate)/task_score/' | tr '\n' ' ')"
+        done &
     TIME_BUDGET="${left}m" bash examples/hgpo_t4/train.sh "$ENV" "$algo" >> "$LOG_DIR/$name.log" 2>&1
     status=$?
     # train.sh prints this marker when it was cut by the time budget (resume next session)
@@ -47,7 +49,7 @@ for algo in $ALGOS; do
     elif [ $status -eq 0 ]; then
         touch "$LOG_DIR/$name.done"
         # the finished run only needs its weights for evaluation: drop the optimizer state (~4 GB of the 20 GB output)
-        find "$CHECKPOINTS_DIR/hgpo_t4_$ENV" -path "*/${algo}_k*" -name "optim_world_size_*.pt" -delete 2>/dev/null
+        find "$CHECKPOINTS_DIR/hgpo_t4_$ENV" -path "*/${algo}_k*_s${SEED:-0}${rtag:+_r$REWARD}/*" -name "optim_world_size_*.pt" -delete 2>/dev/null
         echo "[$(date '+%F %T')] done  $name"
     else
         echo "[$(date '+%F %T')] FAIL  $name (exit $status, see $LOG_DIR/$name.log)"

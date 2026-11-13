@@ -245,10 +245,11 @@ Mỗi version chạy Cell 1–5 rồi đến cell dưới đây. Lặp lại cho
 %%bash
 source $VENV/bin/activate && cd $REPO
 export JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64
-SESSION_BUDGET_MIN=630 TRAIN_DTYPE=fp16 EPOCHS=60 bash examples/hgpo_t4/run_queue.sh webshop
+REWARD=score SESSION_BUDGET_MIN=630 TRAIN_DTYPE=fp16 EPOCHS=60 bash examples/hgpo_t4/run_queue.sh webshop
 tail -n 3 /kaggle/working/checkpoints/logs/*.log
 ```
 
+- `REWARD=score`: reward = 10 × task score của sản phẩm đã mua (điểm từng phần), thay cho reward của paper (10 khi thành công, ngược lại 0). Với reward của paper, Qwen2.5-0.5B có `success_rate` ≈ 0 suốt 43 iteration GRPO đầu tiên nên gần như không có tín hiệu học. Cả 3 thuật toán dùng cùng reward. `success_rate` vẫn được đo theo tiêu chí thành công gốc. Phải dùng cùng `REWARD` cho grid và eval.
 - `SESSION_BUDGET_MIN=630` (10,5 giờ) chừa thời gian cho phần cài đặt và lưu output.
 - Các run chạy lần lượt theo thứ tự GRPO, GiGPO, HGPO. Run nào chưa xong sẽ train tiếp ở version sau. Bạn mất tối đa `SAVE_FREQ=5` iteration chưa kịp lưu.
 - Nếu một run báo `FAIL`, hàng đợi sẽ dừng để không tốn quota. Khi đó gửi mình đoạn cuối của `logs/webshop_<algo>.log`.
@@ -263,7 +264,7 @@ tail -n 3 /kaggle/working/checkpoints/logs/*.log
 %%bash
 source $VENV/bin/activate && cd $REPO
 export JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64
-TRAIN_DTYPE=fp16 bash examples/hgpo_t4/eval_all.sh webshop
+REWARD=score TRAIN_DTYPE=fp16 bash examples/hgpo_t4/eval_all.sh webshop
 pip install -q matplotlib
 python examples/hgpo_t4/summarize.py --log_dir /kaggle/working/checkpoints/logs --out /kaggle/working/results
 ```

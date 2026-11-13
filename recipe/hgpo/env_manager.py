@@ -683,7 +683,8 @@ def make_envs(config):
                     'num_products': None, 
                     'human_goals': config.env.webshop.human_goals,
                     'file_path': file_path,
-                    'attr_path': attr_path
+                    'attr_path': attr_path,
+                    'reward_type': config.env.webshop.get('reward_type', 'binary')
                     }
         projection_f = partial(webshop_projection)
         if config.trainer.val_only:

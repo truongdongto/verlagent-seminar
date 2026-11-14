@@ -171,7 +171,9 @@ Nếu `gdown` bị Google Drive chặn, hãy tải 3 file đó về máy, upload
 
 ```bash
 %%bash
-prev=$(ls -d /kaggle/input/*/checkpoints /kaggle/input/*/*/checkpoints 2>/dev/null | head -1)
+# notebook outputs are mounted at varying depths, e.g. /kaggle/input/notebooks/<user>/<notebook>/checkpoints
+prev=$(find /kaggle/input -maxdepth 6 -type d -path "*/checkpoints/logs" 2>/dev/null | head -1)
+prev=${prev%/logs}
 if [ -n "$prev" ] && [ ! -d /kaggle/working/checkpoints ]; then
   echo "restore from $prev"; cp -r "$prev" /kaggle/working/
 fi

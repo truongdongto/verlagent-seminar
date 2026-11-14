@@ -1031,6 +1031,19 @@ class RayPPOTrainer:
         global_balance_stats = log_seqlen_unbalance(seqlen_list=global_seqlen_lst, partitions=global_partition_lst, prefix=logging_prefix)
         metrics.update(global_balance_stats)
 
+    def _near_deadline(self, step_s: float) -> bool:
+        """True when the next iteration (with its validation and checkpoint) may not end before trainer.deadline (unix time)."""
+        deadline = self.config.trainer.get("deadline", 0)
+        if not deadline or self.config.trainer.save_freq <= 0:
+            return False
+        self._recent_step_s = (getattr(self, "_recent_step_s", []) + [step_s])[-3:]
+        need = 1.3 * max(self._recent_step_s) + 120  # rollout length varies a lot between iterations; 120 s for the checkpoint
+        next_step = self.global_steps + 1
+        test_freq = self.config.trainer.test_freq
+        if test_freq > 0 and (next_step % test_freq == 0 or next_step >= self.total_training_steps):
+            need += 300
+        return time.time() + need > deadline
+
     def fit(self):
         """
         The training loop of PPO.
@@ -1356,6 +1369,15 @@ class RayPPOTrainer:
                 logger.log(data=metrics, step=self.global_steps)
 
                 progress_bar.update(1)
+                if not is_last_step and self._near_deadline(timing_raw["step"]):
+                    # stop at a checkpoint instead of being killed by train.sh's timeout and losing the steps since the last save
+                    if self.global_steps % self.config.trainer.save_freq != 0:
+                        self._save_checkpoint()
+                    with open(os.path.join(self.config.trainer.default_local_dir, "paused"), "w") as f:
+                        f.write(str(self.global_steps))
+                    print(f"[progress] time budget nearly used: paused after iteration {self.global_steps}", flush=True)
+                    progress_bar.close()
+                    return
                 self.global_steps += 1
                 if is_last_step:
                     pprint(f"Final validation metrics: {last_val_metrics}")

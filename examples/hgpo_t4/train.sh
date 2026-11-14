@@ -14,7 +14,8 @@
 #   TRAIN_DTYPE=fp32       FSDP compute dtype: fp32 (safe, default) or fp16 (~3x faster on T4; dp_actor adds dynamic
 #                          loss scaling, see preflight.py grad)
 #   GPU_MEM=0.35           vLLM memory fraction per T4
-#   TIME_BUDGET=11h        stop before Kaggle's 12h limit; the run resumes from the last checkpoint
+#   TIME_BUDGET=11h        stop before Kaggle's 12h limit; the run resumes from the last checkpoint. The trainer
+#                          saves and stops by itself when the next iteration would not fit (timeout is the backstop)
 #   SAVE_FREQ=5            checkpoint every N iterations (only the latest is kept)
 #   ENVS_PER_WORKER=16     WebShop envs per Ray actor (a group of 8 shares one server: ~1.3 GB per actor instead of
 #                          1.2 GB per env); 32 when EVAL=1 (128 val envs -> 4 actors)
@@ -132,6 +133,13 @@ python3 -m examples.data_preprocess.prepare \
     --val_data_size $val_data_size
 
 # Leave room so the run can be cut cleanly before Kaggle's time limit; progress is kept in checkpoints.
+# The trainer pauses itself at a checkpoint 5 min before the budget ends (trainer.deadline) and leaves run_dir/paused.
+budget_s=$(echo "$TIME_BUDGET" | awk '/d$/{print $0*86400; next} /h$/{print $0*3600; next} /m$/{print $0*60; next} {print $0+0}')
+deadline=$(( $(date +%s) + budget_s - 300 ))
+# a resumed run already has its validation curve: skip the extra validation at the resume step
+val_before_train=True
+[ "$val_only" = False ] && [ -f "$run_dir/latest_checkpointed_iteration.txt" ] && val_before_train=False
+rm -f "$run_dir/paused"
 set +e
 timeout --signal=INT --kill-after=120 "$TIME_BUDGET" python3 -m recipe.hgpo.main_hgpo \
     "${algo_args[@]}" \
@@ -202,11 +210,16 @@ timeout --signal=INT --kill-after=120 "$TIME_BUDGET" python3 -m recipe.hgpo.main
     trainer.max_actor_ckpt_to_keep=1 \
     trainer.default_local_dir="$run_dir" \
     trainer.val_only=$val_only \
-    trainer.val_before_train=True \
+    trainer.val_before_train=$val_before_train \
+    ++trainer.deadline=$deadline \
     trainer.save_freq=$save_freq "$@"
 status=$?
 set -e
 
+if [ $status -eq 0 ] && [ -f "$run_dir/paused" ]; then
+    rm -f "$run_dir/paused"
+    status=124
+fi
 if [ $status -eq 124 ] || [ $status -eq 130 ]; then
     echo "TIME BUDGET REACHED ($TIME_BUDGET): rerun the same command in the next session to resume from $run_dir"
     exit 0
